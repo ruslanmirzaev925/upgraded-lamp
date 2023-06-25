@@ -149,6 +149,6 @@ const assert = require('assert');
   transform.on('error', common.mustCall((err) => {
     assert.strictEqual(err.name, 'AbortError');
   }));
-  transform.on('clocse', common.mustCall());
+  transform.on('close', common.mustCall());
   transform[Symbol.asyncDispose]().then(common.mustCall());
 }
