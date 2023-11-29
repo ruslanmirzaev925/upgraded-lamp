@@ -38,6 +38,7 @@ jobs:
            git config --global user.name "Node.js GitHub Bot"  
       - name: Install @node-core/utils
         run: npm install -g @node-core/utils
+      - run: npm view @node-core/utils version
       - name: Check and download new V8 version
         run: |
             ./tools/dep_updaters/update-v8-patch.sh > temp-output
