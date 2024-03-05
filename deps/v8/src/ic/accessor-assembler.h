@@ -41,7 +41,9 @@ class V8_EXPORT_PRIVATE AccessorAssembler : public CodeStubAssembler {
   void GenerateKeyedLoadICBaseline();
   void GenerateKeyedLoadICTrampoline_Megamorphic();
   void GenerateStoreIC();
+  void GenerateStoreIC_Megamorphic();
   void GenerateStoreICTrampoline();
+  void GenerateStoreICTrampoline_Megamorphic();
   void GenerateStoreICBaseline();
   void GenerateDefineNamedOwnIC();
   void GenerateDefineNamedOwnICTrampoline();
@@ -68,6 +70,7 @@ class V8_EXPORT_PRIVATE AccessorAssembler : public CodeStubAssembler {
 
   void GenerateKeyedStoreIC();
   void GenerateKeyedStoreICTrampoline();
+  void GenerateKeyedStoreICTrampoline_Megamorphic();
   void GenerateKeyedStoreICBaseline();
 
   void GenerateDefineKeyedOwnIC();
@@ -254,6 +257,11 @@ class V8_EXPORT_PRIVATE AccessorAssembler : public CodeStubAssembler {
       return IsDefineNamedOwn() || IsDefineKeyedOwn();
     }
 
+    StubCache* stub_cache(Isolate* isolate) const {
+      return IsAnyDefineOwn() ? isolate->define_own_stub_cache()
+                              : isolate->store_stub_cache();
+    }
+
    private:
     TNode<Context> context_;
     base::Optional<TNode<Object>> receiver_;
@@ -413,7 +421,7 @@ class V8_EXPORT_PRIVATE AccessorAssembler : public CodeStubAssembler {
                                   ExitPoint* exit_point);
 
   void HandleLoadAccessor(const LazyLoadICParameters* p,
-                          TNode<CallHandlerInfo> call_handler_info,
+                          TNode<FunctionTemplateInfo> function_template_info,
                           TNode<Word32T> handler_word,
                           TNode<DataHandler> handler,
                           TNode<Uint32T> handler_kind, ExitPoint* exit_point);
@@ -476,8 +484,8 @@ class V8_EXPORT_PRIVATE AccessorAssembler : public CodeStubAssembler {
   // StoreIC implementation.
 
   void HandleStoreICProtoHandler(const StoreICParameters* p,
-                                 TNode<StoreHandler> handler, Label* miss,
-                                 ICMode ic_mode,
+                                 TNode<StoreHandler> handler, Label* slow,
+                                 Label* miss, ICMode ic_mode,
                                  ElementSupport support_elements);
   void HandleStoreICSmiHandlerCase(TNode<Word32T> handler_word,
                                    TNode<JSObject> holder, TNode<Object> value,
@@ -614,12 +622,12 @@ class ExitPoint {
   }
 
   template <class... TArgs>
-  void ReturnCallStub(Callable const& callable, TNode<Context> context,
-                      TArgs... args) {
+  void ReturnCallBuiltin(Builtin builtin, TNode<Context> context,
+                         TArgs... args) {
     if (IsDirect()) {
-      asm_->TailCallStub(callable, context, args...);
+      asm_->TailCallBuiltin(builtin, context, args...);
     } else {
-      indirect_return_handler_(asm_->CallStub(callable, context, args...));
+      indirect_return_handler_(asm_->CallBuiltin(builtin, context, args...));
     }
   }
 

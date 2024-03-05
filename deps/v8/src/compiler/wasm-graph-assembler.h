@@ -122,6 +122,8 @@ class WasmGraphAssembler : public GraphAssembler {
     return LoadFromObject(type, base, IntPtrConstant(offset));
   }
 
+  Node* LoadProtectedPointerFromObject(Node* object, int offset);
+
   Node* LoadImmutableFromObject(MachineType type, Node* base, Node* offset);
 
   Node* LoadImmutableFromObject(MachineType type, Node* base, int offset) {
@@ -161,6 +163,10 @@ class WasmGraphAssembler : public GraphAssembler {
   Node* BuildLoadExternalPointerFromObject(Node* object, int offset,
                                            Node* index, ExternalPointerTag tag,
                                            Node* isolate_root);
+
+  Node* LoadImmutableTrustedPointerFromObject(Node* object, int offset,
+                                              IndirectPointerTag tag);
+  Node* BuildDecodeTrustedPointer(Node* handle, IndirectPointerTag tag);
 
   Node* IsSmi(Node* object);
 
@@ -262,9 +268,9 @@ class WasmGraphAssembler : public GraphAssembler {
 
   Node* AssertNotNull(Node* object, wasm::ValueType type, TrapId trap_id);
 
-  Node* WasmExternInternalize(Node* object);
+  Node* WasmAnyConvertExtern(Node* object);
 
-  Node* WasmExternExternalize(Node* object);
+  Node* WasmExternConvertAny(Node* object);
 
   Node* StructGet(Node* object, const wasm::StructType* type, int field_index,
                   bool is_signed, CheckForNull null_check);
@@ -311,6 +317,8 @@ class WasmGraphAssembler : public GraphAssembler {
   Node* LoadRootRegister() {
     return AddNode(graph()->NewNode(mcgraph()->machine()->LoadRootRegister()));
   }
+
+  Node* LoadTrustedDataFromInstanceObject(Node* instance_object);
 
   SimplifiedOperatorBuilder* simplified() override { return &simplified_; }
 

@@ -10,6 +10,7 @@
 #include "src/base/macros.h"
 #include "src/common/checks.h"
 #include "src/common/globals.h"
+#include "src/common/ptr-compr.h"
 
 namespace v8 {
 namespace internal {
@@ -22,13 +23,12 @@ bool V8_EXPORT_PRIVATE CheckObjectComparisonAllowed(Address a, Address b);
 #endif
 
 // An TaggedImpl is a base class for Object (which is either a Smi or a strong
-// reference to a HeapObject) and MaybeObject (which is either a Smi, a strong
-// reference to a HeapObject, a weak reference to a HeapObject, or a cleared
-// weak reference.
-// This class provides storage and one canonical implementation of various
-// predicates that check Smi and heap object tags' values and also take into
-// account whether the tagged value is expected to be weak reference to a
-// HeapObject or cleared weak reference.
+// reference to a HeapObject) and Tagged<MaybeObject> (which is either a Smi, a
+// strong reference to a HeapObject, a weak reference to a HeapObject, or a
+// cleared weak reference. This class provides storage and one canonical
+// implementation of various predicates that check Smi and heap object tags'
+// values and also take into account whether the tagged value is expected to be
+// weak reference to a HeapObject or cleared weak reference.
 template <HeapObjectReferenceType kRefType, typename StorageType>
 class TaggedImpl {
  public:
@@ -48,8 +48,8 @@ class TaggedImpl {
 
   static const bool kCanBeWeak = kRefType == HeapObjectReferenceType::WEAK;
 
-  constexpr TaggedImpl() : ptr_{} {}
-  explicit constexpr TaggedImpl(StorageType ptr) : ptr_(ptr) {}
+  V8_INLINE constexpr TaggedImpl() : ptr_{} {}
+  V8_INLINE explicit constexpr TaggedImpl(StorageType ptr) : ptr_(ptr) {}
 
   // Make clang on Linux catch what MSVC complains about on Windows:
   explicit operator bool() const = delete;
@@ -57,8 +57,8 @@ class TaggedImpl {
   // Don't use this operator for comparing with stale or invalid pointers
   // because CheckObjectComparisonAllowed() might crash when trying to access
   // the object's page header. Use SafeEquals() instead.
-  template <typename U>
-  constexpr bool operator==(TaggedImpl<kRefType, U> other) const {
+  template <HeapObjectReferenceType kOtherRefType, typename U>
+  constexpr bool operator==(TaggedImpl<kOtherRefType, U> other) const {
     static_assert(
         std::is_same<U, Address>::value || std::is_same<U, Tagged_t>::value,
         "U must be either Address or Tagged_t");
@@ -75,8 +75,8 @@ class TaggedImpl {
   // Don't use this operator for comparing with stale or invalid pointers
   // because CheckObjectComparisonAllowed() might crash when trying to access
   // the object's page header. Use SafeEquals() instead.
-  template <typename U>
-  constexpr bool operator!=(TaggedImpl<kRefType, U> other) const {
+  template <HeapObjectReferenceType kOtherRefType, typename U>
+  constexpr bool operator!=(TaggedImpl<kOtherRefType, U> other) const {
     static_assert(
         std::is_same<U, Address>::value || std::is_same<U, Tagged_t>::value,
         "U must be either Address or Tagged_t");
@@ -90,13 +90,14 @@ class TaggedImpl {
     return static_cast<Tagged_t>(ptr_) != static_cast<Tagged_t>(other.ptr());
   }
 
-  // A variant of operator== which allows comparing InstructionStream object
-  // with non-InstructionStream objects even if the V8_EXTERNAL_CODE_SPACE is
-  // enabled.
+  // A variant of operator== which allows comparing objects in different
+  // pointer compression cages. In particular, this should be used when
+  // comparing objects in trusted- or code space with objects in the main
+  // pointer compression cage.
   constexpr bool SafeEquals(TaggedImpl other) const {
     static_assert(std::is_same<StorageType, Address>::value,
                   "Safe comparison is allowed only for full tagged values");
-    if (V8_EXTERNAL_CODE_SPACE_BOOL) {
+    if (V8_EXTERNAL_CODE_SPACE_BOOL || V8_ENABLE_SANDBOX_BOOL) {
       return ptr_ == other.ptr();
     }
     return this->operator==(other);
@@ -113,7 +114,7 @@ class TaggedImpl {
     return static_cast<Tagged_t>(ptr_) < static_cast<Tagged_t>(other.ptr());
   }
 
-  constexpr StorageType ptr() const { return ptr_; }
+  V8_INLINE constexpr StorageType ptr() const { return ptr_; }
 
   // Returns true if this tagged value is a strong pointer to a HeapObject or
   // Smi.
@@ -213,6 +214,10 @@ class TaggedImpl {
     DCHECK(!HAS_WEAK_HEAP_OBJECT_TAG(ptr_));
     return T::cast(Tagged<Object>(ptr_));
   }
+
+ protected:
+  StorageType* ptr_location() { return &ptr_; }
+  const StorageType* ptr_location() const { return &ptr_; }
 
  private:
   friend class CompressedObjectSlot;

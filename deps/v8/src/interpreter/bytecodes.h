@@ -113,6 +113,10 @@ namespace interpreter {
     OperandType::kIdx, OperandType::kUImm)                                     \
   V(StaCurrentContextSlot, ImplicitRegisterUse::kReadAccumulator,              \
     OperandType::kIdx)                                                         \
+  V(StaScriptContextSlot, ImplicitRegisterUse::kReadAccumulator,               \
+    OperandType::kReg, OperandType::kIdx, OperandType::kUImm)                  \
+  V(StaCurrentScriptContextSlot, ImplicitRegisterUse::kReadAccumulator,        \
+    OperandType::kIdx)                                                         \
                                                                                \
   /* Load-Store lookup slots */                                                \
   V(LdaLookupSlot, ImplicitRegisterUse::kWriteAccumulator, OperandType::kIdx)  \
@@ -274,6 +278,8 @@ namespace interpreter {
   V(ConstructWithSpread, ImplicitRegisterUse::kReadWriteAccumulator,           \
     OperandType::kReg, OperandType::kRegList, OperandType::kRegCount,          \
     OperandType::kIdx)                                                         \
+  V(ConstructForwardAllArgs, ImplicitRegisterUse::kReadWriteAccumulator,       \
+    OperandType::kReg, OperandType::kIdx)                                      \
                                                                                \
   /* Effectful Test Operators */                                               \
   V(TestEqual, ImplicitRegisterUse::kReadWriteAccumulator, OperandType::kReg,  \
@@ -813,6 +819,7 @@ class V8_EXPORT_PRIVATE Bytecodes final : public AllStatic {
            bytecode == Bytecode::kConstruct ||
            bytecode == Bytecode::kCallWithSpread ||
            bytecode == Bytecode::kConstructWithSpread ||
+           bytecode == Bytecode::kConstructForwardAllArgs ||
            bytecode == Bytecode::kCallJSRuntime;
   }
 

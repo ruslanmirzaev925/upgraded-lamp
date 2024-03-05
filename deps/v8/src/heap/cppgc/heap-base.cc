@@ -13,6 +13,7 @@
 #include "src/base/sanitizer/lsan-page-allocator.h"
 #include "src/heap/base/stack.h"
 #include "src/heap/cppgc/globals.h"
+#include "src/heap/cppgc/heap-config.h"
 #include "src/heap/cppgc/heap-object-header.h"
 #include "src/heap/cppgc/heap-page.h"
 #include "src/heap/cppgc/heap-statistics-collector.h"
@@ -219,7 +220,7 @@ void HeapBase::ResetRememberedSet() {
 
 void HeapBase::Terminate() {
   CHECK(!IsMarking());
-  CHECK(!in_disallow_gc_scope());
+  CHECK(!IsGCForbidden());
   // Cannot use IsGCAllowed() as `Terminate()` will be invoked after detaching
   // which implies GC is prohibited at this point.
   CHECK(!sweeper().IsSweepingOnMutatorThread());
@@ -268,8 +269,7 @@ void HeapBase::Terminate() {
     sweeper().Start({SweepingConfig::SweepingType::kAtomic,
                      SweepingConfig::CompactableSpaceHandling::kSweep});
     in_atomic_pause_ = false;
-
-    sweeper().NotifyDoneIfNeeded();
+    sweeper().FinishIfRunning();
     more_termination_gcs_needed =
         strong_persistent_region_.NodesInUse() ||
         weak_persistent_region_.NodesInUse() || [this]() {
@@ -329,6 +329,8 @@ void HeapBase::UnregisterMoveListener(MoveListener* listener) {
       std::remove(move_listeners_.begin(), move_listeners_.end(), listener);
   move_listeners_.erase(it, move_listeners_.end());
 }
+
+bool HeapBase::IsGCForbidden() const { return disallow_gc_scope_ > 0; }
 
 bool HeapBase::IsGCAllowed() const {
   // GC is prohibited in a GC forbidden scope, or when currently sweeping an

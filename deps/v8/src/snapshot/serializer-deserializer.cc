@@ -19,7 +19,10 @@ void IterateObjectCache(Isolate* isolate, std::vector<Tagged<Object>>* cache,
     // During deserialization, the visitor populates the object cache and
     // eventually terminates the cache with undefined.
     visitor->VisitRootPointer(root_id, nullptr, FullObjectSlot(&cache->at(i)));
-    if (IsUndefined(cache->at(i), isolate)) break;
+    // We may see objects in trusted space here (outside of the main pointer
+    // compression cage), so have to use SafeEquals.
+    Tagged<Object> undefined = ReadOnlyRoots(isolate).undefined_value();
+    if (cache->at(i).SafeEquals(undefined)) break;
   }
 }
 }  // namespace
@@ -72,9 +75,9 @@ void SerializerDeserializer::RestoreExternalReferenceRedirector(
 }
 
 void SerializerDeserializer::RestoreExternalReferenceRedirector(
-    Isolate* isolate, Tagged<CallHandlerInfo> call_handler_info) {
+    Isolate* isolate, Tagged<FunctionTemplateInfo> function_template_info) {
   DisallowGarbageCollection no_gc;
-  call_handler_info->init_callback_redirection(isolate);
+  function_template_info->init_callback_redirection(isolate);
 }
 
 }  // namespace internal
