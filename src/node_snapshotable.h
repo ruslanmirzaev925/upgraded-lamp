@@ -25,6 +25,9 @@ struct PropInfo {
 
 typedef size_t SnapshotIndex;
 
+bool WithoutCodeCache(const SnapshotFlags& flags);
+bool WithoutCodeCache(const SnapshotConfig& config);
+
 // When serializing an embedder object, we'll serialize the native states
 // into a chunk that can be mapped into a subclass of InternalFieldInfoBase,
 // and pass it into the V8 callback as the payload of StartupData.
@@ -66,6 +69,14 @@ struct InternalFieldInfoBase {
   void Delete() { ::operator delete[](this); }
 
   InternalFieldInfoBase() = default;
+};
+
+struct EmbedderTypeInfo {
+  enum class MemoryMode : uint8_t { kBaseObject, kCppGC };
+  EmbedderTypeInfo(EmbedderObjectType t, MemoryMode m) : type(t), mode(m) {}
+  EmbedderTypeInfo() = default;
+  EmbedderObjectType type;
+  MemoryMode mode;
 };
 
 // An interface for snapshotable native objects to inherit from.
@@ -123,6 +134,8 @@ void SerializeSnapshotableObjects(Realm* realm,
                                   v8::SnapshotCreator* creator,
                                   RealmSerializeInfo* info);
 
+#define DCHECK_IS_SNAPSHOT_SLOT(index) DCHECK_EQ(index, BaseObject::kSlot)
+
 namespace mksnapshot {
 class BindingData : public SnapshotableObject {
  public:
@@ -144,7 +157,6 @@ class BindingData : public SnapshotableObject {
   AliasedUint8Array is_building_snapshot_buffer_;
   InternalFieldInfo* internal_field_info_ = nullptr;
 };
-
 }  // namespace mksnapshot
 
 }  // namespace node

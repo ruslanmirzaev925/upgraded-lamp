@@ -10,6 +10,7 @@
     'node_use_v8_platform%': 'true',
     'node_use_bundled_v8%': 'true',
     'node_shared%': 'false',
+    'node_write_snapshot_as_string_literals': 'true',
     'force_dynamic_crt%': 0,
     'ossfuzz' : 'false',
     'node_module_version%': '',
@@ -72,12 +73,14 @@
       'src/connection_wrap.cc',
       'src/dataqueue/queue.cc',
       'src/debug_utils.cc',
+      'src/embedded_data.cc',
       'src/encoding_binding.cc',
       'src/env.cc',
       'src/fs_event_wrap.cc',
       'src/handle_wrap.cc',
       'src/heap_utils.cc',
       'src/histogram.cc',
+      'src/internal_only_v8.cc',
       'src/js_native_api.h',
       'src/js_native_api_types.h',
       'src/js_native_api_v8.cc',
@@ -100,6 +103,7 @@
       'src/node_contextify.cc',
       'src/node_credentials.cc',
       'src/node_dir.cc',
+      'src/node_dotenv.cc',
       'src/node_env_var.cc',
       'src/node_errors.cc',
       'src/node_external_reference.cc',
@@ -110,6 +114,7 @@
       'src/node_main_instance.cc',
       'src/node_messaging.cc',
       'src/node_metadata.cc',
+      'src/node_modules.cc',
       'src/node_options.cc',
       'src/node_os.cc',
       'src/node_perf.cc',
@@ -140,6 +145,7 @@
       'src/node_watchdog.cc',
       'src/node_worker.cc',
       'src/node_zlib.cc',
+      'src/path.cc',
       'src/permission/child_process_permission.cc',
       'src/permission/fs_permission.cc',
       'src/permission/inspector_permission.cc',
@@ -189,6 +195,7 @@
       'src/dataqueue/queue.h',
       'src/debug_utils.h',
       'src/debug_utils-inl.h',
+      'src/embeded_data.h',
       'src/encoding_binding.h',
       'src/env_properties.h',
       'src/env.h',
@@ -214,6 +221,7 @@
       'src/node_context_data.h',
       'src/node_contextify.h',
       'src/node_dir.h',
+      'src/node_dotenv.h',
       'src/node_errors.h',
       'src/node_exit_code.h',
       'src/node_external_reference.h',
@@ -231,6 +239,7 @@
       'src/node_messaging.h',
       'src/node_metadata.h',
       'src/node_mutex.h',
+      'src/node_modules.h',
       'src/node_object_wrap.h',
       'src/node_options.h',
       'src/node_options-inl.h',
@@ -253,13 +262,13 @@
       'src/node_stat_watcher.h',
       'src/node_union_bytes.h',
       'src/node_url.h',
-      'src/node_util.h',
       'src/node_version.h',
       'src/node_v8.h',
       'src/node_v8_platform-inl.h',
       'src/node_wasi.h',
       'src/node_watchdog.h',
       'src/node_worker.h',
+      'src/path.h',
       'src/permission/child_process_permission.h',
       'src/permission/fs_permission.h',
       'src/permission/inspector_permission.h',
@@ -350,6 +359,7 @@
       'src/quic/cid.cc',
       'src/quic/data.cc',
       'src/quic/endpoint.cc',
+      'src/quic/http3.cc',
       'src/quic/logstream.cc',
       'src/quic/packet.cc',
       'src/quic/preferredaddress.cc',
@@ -364,6 +374,7 @@
       'src/quic/cid.h',
       'src/quic/data.h',
       'src/quic/endpoint.h',
+      'src/quic/http3.h',
       'src/quic/logstream.h',
       'src/quic/packet.h',
       'src/quic/preferredaddress.h',
@@ -373,6 +384,39 @@
       'src/quic/tlscontext.h',
       'src/quic/tokens.h',
       'src/quic/transportparams.h',
+      'src/quic/quic.cc',
+    ],
+    'node_cctest_sources': [
+      'src/node_snapshot_stub.cc',
+      'test/cctest/node_test_fixture.cc',
+      'test/cctest/node_test_fixture.h',
+      'test/cctest/test_aliased_buffer.cc',
+      'test/cctest/test_base64.cc',
+      'test/cctest/test_base_object_ptr.cc',
+      'test/cctest/test_cppgc.cc',
+      'test/cctest/test_node_postmortem_metadata.cc',
+      'test/cctest/test_environment.cc',
+      'test/cctest/test_linked_binding.cc',
+      'test/cctest/test_node_api.cc',
+      'test/cctest/test_per_process.cc',
+      'test/cctest/test_platform.cc',
+      'test/cctest/test_report.cc',
+      'test/cctest/test_json_utils.cc',
+      'test/cctest/test_sockaddr.cc',
+      'test/cctest/test_traced_value.cc',
+      'test/cctest/test_util.cc',
+      'test/cctest/test_dataqueue.cc',
+    ],
+    'node_cctest_openssl_sources': [
+      'test/cctest/test_crypto_clienthello.cc',
+      'test/cctest/test_node_crypto.cc',
+      'test/cctest/test_node_crypto_env.cc',
+      'test/cctest/test_quic_cid.cc',
+      'test/cctest/test_quic_tokens.cc',
+    ],
+    'node_cctest_inspector_sources': [
+      'test/cctest/test_inspector_socket.cc',
+      'test/cctest/test_inspector_socket_server.cc',
     ],
     'node_mksnapshot_exec': '<(PRODUCT_DIR)/<(EXECUTABLE_PREFIX)node_mksnapshot<(EXECUTABLE_SUFFIX)',
     'node_js2c_exec': '<(PRODUCT_DIR)/<(EXECUTABLE_PREFIX)node_js2c<(EXECUTABLE_SUFFIX)',
@@ -434,6 +478,9 @@
     },
 
     'conditions': [
+      ['target_arch=="arm64"', {
+        'cflags': ['-mbranch-protection=standard'],  # Pointer authentication.
+      }],
       ['OS in "aix os400"', {
         'ldflags': [
           '-Wl,-bnoerrmsg',
@@ -728,7 +775,7 @@
                 '<(fipsmodule)',
               ],
               'action': [
-                'python', 'tools/copyfile.py',
+                '<(python)', 'tools/copyfile.py',
                 '<(fipsmodule_internal)',
                 '<(fipsmodule)',
               ],
@@ -738,7 +785,7 @@
               'inputs': [ '<(opensslconfig)', ],
               'outputs': [ '<(opensslconfig_internal)', ],
               'action': [
-                'python', 'tools/enable_fips_include.py',
+                '<(python)', 'tools/enable_fips_include.py',
                 '<(opensslconfig)',
                 '<(opensslconfig_internal)',
                 '<(fipsconfig)',
@@ -782,6 +829,7 @@
         'deps/googletest/googletest.gyp:gtest_prod',
         'deps/histogram/histogram.gyp:histogram',
         'deps/uvwasi/uvwasi.gyp:uvwasi',
+        'deps/simdjson/simdjson.gyp:simdjson',
         'deps/simdutf/simdutf.gyp:simdutf',
         'deps/ada/ada.gyp:ada',
         'node_js2c#host',
@@ -884,9 +932,6 @@
           'target_arch=="x64" and '
           'node_target_type=="executable"', {
           'defines': [ 'NODE_ENABLE_LARGE_CODE_PAGES=1' ],
-        }],
-        ['OS in "linux mac"', {
-          'defines': [ 'NODE_MKSNAPSHOT_USE_STRING_LITERALS' ],
         }],
         [ 'use_openssl_def==1', {
           # TODO(bnoordhuis) Make all platforms export the same list of symbols.
@@ -1016,6 +1061,7 @@
         'deps/googletest/googletest.gyp:gtest_main',
         'deps/histogram/histogram.gyp:histogram',
         'deps/uvwasi/uvwasi.gyp:uvwasi',
+        'deps/simdjson/simdjson.gyp:simdjson',
         'deps/simdutf/simdutf.gyp:simdutf',
         'deps/ada/ada.gyp:ada',
       ],
@@ -1040,48 +1086,20 @@
         'NODE_WANT_INTERNALS=1',
       ],
 
-      'sources': [
-        'src/node_snapshot_stub.cc',
-        'test/cctest/node_test_fixture.cc',
-        'test/cctest/node_test_fixture.h',
-        'test/cctest/test_aliased_buffer.cc',
-        'test/cctest/test_base64.cc',
-        'test/cctest/test_base_object_ptr.cc',
-        'test/cctest/test_node_postmortem_metadata.cc',
-        'test/cctest/test_environment.cc',
-        'test/cctest/test_linked_binding.cc',
-        'test/cctest/test_node_api.cc',
-        'test/cctest/test_per_process.cc',
-        'test/cctest/test_platform.cc',
-        'test/cctest/test_report.cc',
-        'test/cctest/test_json_utils.cc',
-        'test/cctest/test_sockaddr.cc',
-        'test/cctest/test_traced_value.cc',
-        'test/cctest/test_util.cc',
-        'test/cctest/test_dataqueue.cc',
-      ],
+      'sources': [ '<@(node_cctest_sources)' ],
 
       'conditions': [
         [ 'node_use_openssl=="true"', {
           'defines': [
             'HAVE_OPENSSL=1',
           ],
-          'sources': [
-            'test/cctest/test_crypto_clienthello.cc',
-            'test/cctest/test_node_crypto.cc',
-            'test/cctest/test_node_crypto_env.cc',
-            'test/cctest/test_quic_cid.cc',
-            'test/cctest/test_quic_tokens.cc',
-          ]
+          'sources': [ '<@(node_cctest_openssl_sources)' ],
         }],
         ['v8_enable_inspector==1', {
-          'sources': [
-            'test/cctest/test_inspector_socket.cc',
-            'test/cctest/test_inspector_socket_server.cc'
-          ],
           'defines': [
             'HAVE_INSPECTOR=1',
           ],
+          'sources': [ '<@(node_cctest_inspector_sources)' ],
         }, {
            'defines': [
              'HAVE_INSPECTOR=0',
@@ -1199,11 +1217,14 @@
         'deps/simdutf/simdutf.gyp:simdutf#host',
       ],
       'include_dirs': [
-        'tools'
+        'tools',
+        'src',
       ],
       'sources': [
         'tools/js2c.cc',
-        'tools/executable_wrapper.h'
+        'tools/executable_wrapper.h',
+        'src/embedded_data.h',
+        'src/embedded_data.cc',
       ],
       'conditions': [
         [ 'node_shared_libuv=="false"', {
@@ -1256,6 +1277,9 @@
       ],
 
       'conditions': [
+        ['node_write_snapshot_as_array_literals=="true"', {
+          'defines': [ 'NODE_MKSNAPSHOT_USE_ARRAY_LITERALS=1' ],
+        }],
         [ 'node_use_openssl=="true"', {
           'defines': [
             'HAVE_OPENSSL=1',

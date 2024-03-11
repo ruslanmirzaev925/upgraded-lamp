@@ -2,10 +2,13 @@ name: Build Windows
 
 on:
   pull_request:
-    paths-ignore:
-      - README.md
-      - .github/**
-      - '!.github/workflows/build-windows.yml'
+    paths:
+      - lib/**/*.js
+      - Makefile
+      - src/**/*.cc
+      - src/**/*.h
+      - tools/gyp/**
+      - .github/workflows/build-windows.yml
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches:
@@ -13,10 +16,13 @@ on:
       - canary
       - v[0-9]+.x-staging
       - v[0-9]+.x
-    paths-ignore:
-      - README.md
-      - .github/**
-      - '!.github/workflows/build-windows.yml'
+    paths:
+      - lib/**/*.js
+      - Makefile
+      - src/**/*.cc
+      - src/**/*.h
+      - tools/gyp/**
+      - .github/workflows/build-windows.yml
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -34,15 +40,15 @@ jobs:
     if: github.event.pull_request.draft == false
     strategy:
       matrix:
-        windows: [windows-2019, windows-2022]
+        windows: [windows-2022]
       fail-fast: false
     runs-on: ${{ matrix.windows }}
     steps:
-      - uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab  # v3.5.2
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
         with:
           persist-credentials: false
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@bd6b4b6205c4dbad673328db7b31b7fab9e241c0  # v4.6.1
+        uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c  # v5.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install deps

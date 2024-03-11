@@ -55,8 +55,7 @@ v8::Local<v8::Object> BaseObject::object() const {
 v8::Local<v8::Object> BaseObject::object(v8::Isolate* isolate) const {
   v8::Local<v8::Object> handle = object();
 
-  DCHECK_EQ(handle->GetCreationContext().ToLocalChecked()->GetIsolate(),
-            isolate);
+  DCHECK_EQ(handle->GetCreationContextChecked()->GetIsolate(), isolate);
   DCHECK_EQ(env()->isolate(), isolate);
 
   return handle;
@@ -70,23 +69,28 @@ Realm* BaseObject::realm() const {
   return realm_;
 }
 
-bool BaseObject::IsBaseObject(v8::Local<v8::Object> obj) {
+bool BaseObject::IsBaseObject(IsolateData* isolate_data,
+                              v8::Local<v8::Object> obj) {
   if (obj->InternalFieldCount() < BaseObject::kInternalFieldCount) {
     return false;
   }
-  void* ptr =
-      obj->GetAlignedPointerFromInternalField(BaseObject::kEmbedderType);
-  return ptr == &kNodeEmbedderId;
+
+  uint16_t* ptr = static_cast<uint16_t*>(
+      obj->GetAlignedPointerFromInternalField(BaseObject::kEmbedderType));
+  return ptr == isolate_data->embedder_id_for_non_cppgc();
 }
 
-void BaseObject::TagBaseObject(v8::Local<v8::Object> object) {
+void BaseObject::TagBaseObject(IsolateData* isolate_data,
+                               v8::Local<v8::Object> object) {
   DCHECK_GE(object->InternalFieldCount(), BaseObject::kInternalFieldCount);
-  object->SetAlignedPointerInInternalField(BaseObject::kEmbedderType,
-                                           &kNodeEmbedderId);
+  object->SetAlignedPointerInInternalField(
+      BaseObject::kEmbedderType, isolate_data->embedder_id_for_non_cppgc());
 }
 
-void BaseObject::SetInternalFields(v8::Local<v8::Object> object, void* slot) {
-  TagBaseObject(object);
+void BaseObject::SetInternalFields(IsolateData* isolate_data,
+                                   v8::Local<v8::Object> object,
+                                   void* slot) {
+  TagBaseObject(isolate_data, object);
   object->SetAlignedPointerInInternalField(BaseObject::kSlot, slot);
 }
 
@@ -130,7 +134,8 @@ template <int Field>
 void BaseObject::InternalFieldGet(
     v8::Local<v8::String> property,
     const v8::PropertyCallbackInfo<v8::Value>& info) {
-  info.GetReturnValue().Set(info.This()->GetInternalField(Field));
+  info.GetReturnValue().Set(
+      info.This()->GetInternalField(Field).As<v8::Value>());
 }
 
 template <int Field, bool (v8::Value::* typecheck)() const>

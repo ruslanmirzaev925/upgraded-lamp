@@ -90,6 +90,7 @@ extern char** environ;
 #if defined(__linux__)
 # include <sched.h>
 # include <sys/syscall.h>
+# define gettid() syscall(SYS_gettid)
 # define uv__accept4 accept4
 #endif
 
@@ -344,7 +345,7 @@ static void uv__finish_close(uv_handle_t* handle) {
   }
 
   uv__handle_unref(handle);
-  QUEUE_REMOVE(&handle->handle_queue);
+  uv__queue_remove(&handle->handle_queue);
 
   if (handle->close_cb) {
     handle->close_cb(handle);
@@ -380,7 +381,7 @@ int uv_backend_fd(const uv_loop_t* loop) {
 static int uv__loop_alive(const uv_loop_t* loop) {
   return uv__has_active_handles(loop) ||
          uv__has_active_reqs(loop) ||
-         !QUEUE_EMPTY(&loop->pending_queue) ||
+         !uv__queue_empty(&loop->pending_queue) ||
          loop->closing_handles != NULL;
 }
 
@@ -389,8 +390,8 @@ static int uv__backend_timeout(const uv_loop_t* loop) {
   if (loop->stop_flag == 0 &&
       /* uv__loop_alive(loop) && */
       (uv__has_active_handles(loop) || uv__has_active_reqs(loop)) &&
-      QUEUE_EMPTY(&loop->pending_queue) &&
-      QUEUE_EMPTY(&loop->idle_handles) &&
+      uv__queue_empty(&loop->pending_queue) &&
+      uv__queue_empty(&loop->idle_handles) &&
       (loop->flags & UV_LOOP_REAP_CHILDREN) == 0 &&
       loop->closing_handles == NULL)
     return uv__next_timeout(loop);
@@ -399,7 +400,7 @@ static int uv__backend_timeout(const uv_loop_t* loop) {
 
 
 int uv_backend_timeout(const uv_loop_t* loop) {
-  if (QUEUE_EMPTY(&loop->watcher_queue))
+  if (uv__queue_empty(&loop->watcher_queue))
     return uv__backend_timeout(loop);
   /* Need to call uv_run to update the backend fd state. */
   return 0;
@@ -424,15 +425,15 @@ int uv_run(uv_loop_t* loop, uv_run_mode mode) {
    * while loop for UV_RUN_DEFAULT. Otherwise timers only need to be executed
    * once, which should be done after polling in order to maintain proper
    * execution order of the conceptual event loop. */
-  if (mode == UV_RUN_DEFAULT) {
-    if (r)
-      uv__update_time(loop);
+  if (mode == UV_RUN_DEFAULT && r != 0 && loop->stop_flag == 0) {
+    uv__update_time(loop);
     uv__run_timers(loop);
   }
 
   while (r != 0 && loop->stop_flag == 0) {
     can_sleep =
-        QUEUE_EMPTY(&loop->pending_queue) && QUEUE_EMPTY(&loop->idle_handles);
+        uv__queue_empty(&loop->pending_queue) &&
+        uv__queue_empty(&loop->idle_handles);
 
     uv__run_pending(loop);
     uv__run_idle(loop);
@@ -448,7 +449,7 @@ int uv_run(uv_loop_t* loop, uv_run_mode mode) {
 
     /* Process immediate callbacks (e.g. write_cb) a small fixed number of
      * times to avoid loop starvation.*/
-    for (r = 0; r < 8 && !QUEUE_EMPTY(&loop->pending_queue); r++)
+    for (r = 0; r < 8 && !uv__queue_empty(&loop->pending_queue); r++)
       uv__run_pending(loop);
 
     /* Run one final update on the provider_idle_time in case uv__io_poll
@@ -827,17 +828,17 @@ int uv_fileno(const uv_handle_t* handle, uv_os_fd_t* fd) {
 
 
 static void uv__run_pending(uv_loop_t* loop) {
-  QUEUE* q;
-  QUEUE pq;
+  struct uv__queue* q;
+  struct uv__queue pq;
   uv__io_t* w;
 
-  QUEUE_MOVE(&loop->pending_queue, &pq);
+  uv__queue_move(&loop->pending_queue, &pq);
 
-  while (!QUEUE_EMPTY(&pq)) {
-    q = QUEUE_HEAD(&pq);
-    QUEUE_REMOVE(q);
-    QUEUE_INIT(q);
-    w = QUEUE_DATA(q, uv__io_t, pending_queue);
+  while (!uv__queue_empty(&pq)) {
+    q = uv__queue_head(&pq);
+    uv__queue_remove(q);
+    uv__queue_init(q);
+    w = uv__queue_data(q, uv__io_t, pending_queue);
     w->cb(loop, w, POLLOUT);
   }
 }
@@ -892,8 +893,8 @@ static void maybe_resize(uv_loop_t* loop, unsigned int len) {
 void uv__io_init(uv__io_t* w, uv__io_cb cb, int fd) {
   assert(cb != NULL);
   assert(fd >= -1);
-  QUEUE_INIT(&w->pending_queue);
-  QUEUE_INIT(&w->watcher_queue);
+  uv__queue_init(&w->pending_queue);
+  uv__queue_init(&w->watcher_queue);
   w->cb = cb;
   w->fd = fd;
   w->events = 0;
@@ -919,8 +920,8 @@ void uv__io_start(uv_loop_t* loop, uv__io_t* w, unsigned int events) {
     return;
 #endif
 
-  if (QUEUE_EMPTY(&w->watcher_queue))
-    QUEUE_INSERT_TAIL(&loop->watcher_queue, &w->watcher_queue);
+  if (uv__queue_empty(&w->watcher_queue))
+    uv__queue_insert_tail(&loop->watcher_queue, &w->watcher_queue);
 
   if (loop->watchers[w->fd] == NULL) {
     loop->watchers[w->fd] = w;
@@ -945,8 +946,8 @@ void uv__io_stop(uv_loop_t* loop, uv__io_t* w, unsigned int events) {
   w->pevents &= ~events;
 
   if (w->pevents == 0) {
-    QUEUE_REMOVE(&w->watcher_queue);
-    QUEUE_INIT(&w->watcher_queue);
+    uv__queue_remove(&w->watcher_queue);
+    uv__queue_init(&w->watcher_queue);
     w->events = 0;
 
     if (w == loop->watchers[w->fd]) {
@@ -955,14 +956,14 @@ void uv__io_stop(uv_loop_t* loop, uv__io_t* w, unsigned int events) {
       loop->nfds--;
     }
   }
-  else if (QUEUE_EMPTY(&w->watcher_queue))
-    QUEUE_INSERT_TAIL(&loop->watcher_queue, &w->watcher_queue);
+  else if (uv__queue_empty(&w->watcher_queue))
+    uv__queue_insert_tail(&loop->watcher_queue, &w->watcher_queue);
 }
 
 
 void uv__io_close(uv_loop_t* loop, uv__io_t* w) {
   uv__io_stop(loop, w, POLLIN | POLLOUT | UV__POLLRDHUP | UV__POLLPRI);
-  QUEUE_REMOVE(&w->pending_queue);
+  uv__queue_remove(&w->pending_queue);
 
   /* Remove stale events for this file descriptor */
   if (w->fd != -1)
@@ -971,8 +972,8 @@ void uv__io_close(uv_loop_t* loop, uv__io_t* w) {
 
 
 void uv__io_feed(uv_loop_t* loop, uv__io_t* w) {
-  if (QUEUE_EMPTY(&w->pending_queue))
-    QUEUE_INSERT_TAIL(&loop->pending_queue, &w->pending_queue);
+  if (uv__queue_empty(&w->pending_queue))
+    uv__queue_insert_tail(&loop->pending_queue, &w->pending_queue);
 }
 
 
@@ -1020,8 +1021,8 @@ int uv_getrusage(uv_rusage_t* rusage) {
   /* Most platforms report ru_maxrss in kilobytes; macOS and Solaris are
    * the outliers because of course they are.
    */
-#if defined(__APPLE__) && !TARGET_OS_IPHONE
-  rusage->ru_maxrss /= 1024;                  /* macOS reports bytes. */
+#if defined(__APPLE__)
+  rusage->ru_maxrss /= 1024;                  /* macOS and iOS report bytes. */
 #elif defined(__sun)
   rusage->ru_maxrss /= getpagesize() / 1024;  /* Solaris reports pages. */
 #endif
@@ -1271,6 +1272,10 @@ static int uv__getpwuid_r(uv_passwd_t *pwd, uid_t uid) {
 
 
 int uv_os_get_group(uv_group_t* grp, uv_uid_t gid) {
+#if defined(__ANDROID__) && __ANDROID_API__ < 24
+  /* This function getgrgid_r() was added in Android N (level 24) */
+  return UV_ENOSYS;
+#else
   struct group gp;
   struct group* result;
   char* buf;
@@ -1347,6 +1352,7 @@ int uv_os_get_group(uv_group_t* grp, uv_uid_t gid) {
   uv__free(buf);
 
   return 0;
+#endif
 }
 
 
@@ -1552,6 +1558,130 @@ int uv_os_setpriority(uv_pid_t pid, int priority) {
   return 0;
 }
 
+/**
+ * If the function succeeds, the return value is 0.
+ * If the function fails, the return value is non-zero.
+ * for Linux, when schedule policy is SCHED_OTHER (default), priority is 0.
+ * So the output parameter priority is actually the nice value.
+*/
+int uv_thread_getpriority(uv_thread_t tid, int* priority) {
+  int r;
+  int policy;
+  struct sched_param param;
+#ifdef __linux__
+  pid_t pid = gettid();
+#endif
+
+  if (priority == NULL)
+    return UV_EINVAL;
+
+  r = pthread_getschedparam(tid, &policy, &param);
+  if (r != 0)
+    return UV__ERR(errno);
+
+#ifdef __linux__
+  if (SCHED_OTHER == policy && pthread_equal(tid, pthread_self())) {
+    errno = 0;
+    r = getpriority(PRIO_PROCESS, pid);
+    if (r == -1 && errno != 0)
+      return UV__ERR(errno);
+    *priority = r;
+    return 0;
+  }
+#endif
+
+  *priority = param.sched_priority;
+  return 0;
+}
+
+#ifdef __linux__
+static int set_nice_for_calling_thread(int priority) {
+  int r;
+  int nice;
+
+  if (priority < UV_THREAD_PRIORITY_LOWEST || priority > UV_THREAD_PRIORITY_HIGHEST)
+    return UV_EINVAL;
+
+  pid_t pid = gettid();
+  nice = 0 - priority * 2;
+  r = setpriority(PRIO_PROCESS, pid, nice);
+  if (r != 0)
+    return UV__ERR(errno);
+  return 0;
+}
+#endif
+
+/**
+ * If the function succeeds, the return value is 0.
+ * If the function fails, the return value is non-zero.
+*/
+int uv_thread_setpriority(uv_thread_t tid, int priority) {
+  int r;
+  int min;
+  int max;
+  int range;
+  int prio;
+  int policy;
+  struct sched_param param;
+
+  if (priority < UV_THREAD_PRIORITY_LOWEST || priority > UV_THREAD_PRIORITY_HIGHEST)
+    return UV_EINVAL;
+
+  r = pthread_getschedparam(tid, &policy, &param);
+  if (r != 0)
+    return UV__ERR(errno);
+
+#ifdef __linux__
+/**
+ * for Linux, when schedule policy is SCHED_OTHER (default), priority must be 0,
+ * we should set the nice value in this case.
+*/
+  if (SCHED_OTHER == policy && pthread_equal(tid, pthread_self()))
+    return set_nice_for_calling_thread(priority);
+#endif
+
+#ifdef __PASE__
+  min = 1;
+  max = 127;
+#else
+  min = sched_get_priority_min(policy);
+  max = sched_get_priority_max(policy);
+#endif
+
+  if (min == -1 || max == -1)
+    return UV__ERR(errno);
+
+  range = max - min;
+
+  switch (priority) {
+    case UV_THREAD_PRIORITY_HIGHEST:
+      prio = max;
+      break;
+    case UV_THREAD_PRIORITY_ABOVE_NORMAL:
+      prio = min + range * 3 / 4;
+      break;
+    case UV_THREAD_PRIORITY_NORMAL:
+      prio = min + range / 2;
+      break;
+    case UV_THREAD_PRIORITY_BELOW_NORMAL:
+      prio = min + range / 4;
+      break;
+    case UV_THREAD_PRIORITY_LOWEST:
+      prio = min;
+      break;
+    default:
+      return 0;
+  }
+
+  if (param.sched_priority != prio) {
+    param.sched_priority = prio;
+    r = pthread_setschedparam(tid, policy, &param);
+    if (r != 0)
+      return UV__ERR(errno);  
+  }
+
+  return 0;
+}
 
 int uv_os_uname(uv_utsname_t* buffer) {
   struct utsname buf;

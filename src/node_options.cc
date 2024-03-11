@@ -10,9 +10,8 @@
 #include "openssl/opensslv.h"
 #endif
 
-#include <errno.h>
 #include <algorithm>
-#include <cstdlib>  // strtoul, errno
+#include <charconv>
 #include <limits>
 #include <sstream>
 #include <string_view>
@@ -114,9 +113,16 @@ void EnvironmentOptions::CheckOptions(std::vector<std::string>* errors,
     errors->push_back("--policy-integrity cannot be empty");
   }
 
-  if (!module_type.empty()) {
-    if (module_type != "commonjs" && module_type != "module") {
+  if (!input_type.empty()) {
+    if (input_type != "commonjs" && input_type != "module") {
       errors->push_back("--input-type must be \"module\" or \"commonjs\"");
+    }
+  }
+
+  if (!type.empty()) {
+    if (type != "commonjs" && type != "module") {
+      errors->push_back("--experimental-default-type must be "
+                        "\"module\" or \"commonjs\"");
     }
   }
 
@@ -173,7 +179,7 @@ void EnvironmentOptions::CheckOptions(std::vector<std::string>* errors,
     } else if (force_repl) {
       errors->push_back("either --watch or --interactive "
                         "can be used, not both");
-    } else if (argv->size() < 1 || (*argv)[1].empty()) {
+    } else if (!test_runner && (argv->size() < 1 || (*argv)[1].empty())) {
       errors->push_back("--watch requires specifying a file");
     }
 
@@ -341,6 +347,11 @@ EnvironmentOptionsParser::EnvironmentOptionsParser() {
             &EnvironmentOptions::conditions,
             kAllowedInEnvvar);
   AddAlias("-C", "--conditions");
+  AddOption("--experimental-detect-module",
+            "when ambiguous modules fail to evaluate because they contain "
+            "ES module syntax, try again to evaluate them as ES modules",
+            &EnvironmentOptions::detect_module,
+            kAllowedInEnvvar);
   AddOption("--diagnostic-dir",
             "set dir for all output files"
             " (default: current working directory)",
@@ -370,9 +381,19 @@ EnvironmentOptionsParser::EnvironmentOptionsParser() {
             &EnvironmentOptions::experimental_fetch,
             kAllowedInEnvvar,
             true);
+  AddOption("--experimental-websocket",
+            "experimental WebSocket API",
+            &EnvironmentOptions::experimental_websocket,
+            kAllowedInEnvvar,
+            true);
   AddOption("--experimental-global-customevent",
             "expose experimental CustomEvent on the global scope",
             &EnvironmentOptions::experimental_global_customevent,
+            kAllowedInEnvvar,
+            true);
+  AddOption("--experimental-global-navigator",
+            "expose experimental Navigator API on the global scope",
+            &EnvironmentOptions::experimental_global_navigator,
             kAllowedInEnvvar,
             true);
   AddOption("--experimental-global-webcrypto",
@@ -396,7 +417,7 @@ EnvironmentOptionsParser::EnvironmentOptionsParser() {
             &EnvironmentOptions::experimental_wasm_modules,
             kAllowedInEnvvar);
   AddOption("--experimental-import-meta-resolve",
-            "experimental ES Module import.meta.resolve() support",
+            "experimental ES Module import.meta.resolve() parentURL support",
             &EnvironmentOptions::experimental_import_meta_resolve,
             kAllowedInEnvvar);
   AddOption("--experimental-permission",
@@ -425,6 +446,10 @@ EnvironmentOptionsParser::EnvironmentOptionsParser() {
   AddOption("--allow-fs-write",
             "allow permissions to write in the filesystem",
             &EnvironmentOptions::allow_fs_write,
+            kAllowedInEnvvar);
+  AddOption("--allow-addons",
+            "allow use of addons when any permissions are set",
+            &EnvironmentOptions::allow_addons,
             kAllowedInEnvvar);
   AddOption("--allow-child-process",
             "allow use of child process when any permissions are set",
@@ -469,7 +494,7 @@ EnvironmentOptionsParser::EnvironmentOptionsParser() {
             kAllowedInEnvvar);
   AddOption("--input-type",
             "set module type for string input",
-            &EnvironmentOptions::module_type,
+            &EnvironmentOptions::input_type,
             kAllowedInEnvvar);
   AddOption(
       "--experimental-specifier-resolution", "", NoOp{}, kAllowedInEnvvar);
@@ -506,6 +531,10 @@ EnvironmentOptionsParser::EnvironmentOptionsParser() {
             &EnvironmentOptions::warnings,
             kAllowedInEnvvar,
             true);
+  AddOption("--disable-warning",
+            "silence specific process warnings",
+            &EnvironmentOptions::disable_warnings,
+            kAllowedInEnvvar);
   AddOption("--force-context-aware",
             "disable loading non-context-aware addons",
             &EnvironmentOptions::force_context_aware,
@@ -575,9 +604,21 @@ EnvironmentOptionsParser::EnvironmentOptionsParser() {
             "write warnings to file instead of stderr",
             &EnvironmentOptions::redirect_warnings,
             kAllowedInEnvvar);
+  AddOption(
+      "[has_env_file_string]", "", &EnvironmentOptions::has_env_file_string);
+  AddOption("--env-file",
+            "set environment variables from supplied file",
+            &EnvironmentOptions::env_file);
+  Implies("--env-file", "[has_env_file_string]");
   AddOption("--test",
             "launch test runner on startup",
             &EnvironmentOptions::test_runner);
+  AddOption("--test-concurrency",
+            "specify test runner concurrency",
+            &EnvironmentOptions::test_runner_concurrency);
+  AddOption("--test-timeout",
+            "specify test runner timeout",
+            &EnvironmentOptions::test_runner_timeout);
   AddOption("--experimental-test-coverage",
             "enable code coverage in the test runner",
             &EnvironmentOptions::test_runner_coverage);
@@ -595,6 +636,10 @@ EnvironmentOptionsParser::EnvironmentOptionsParser() {
   AddOption("--test-only",
             "run tests with 'only' option set",
             &EnvironmentOptions::test_only,
+            kAllowedInEnvvar);
+  AddOption("--test-shard",
+            "run test at specific shard",
+            &EnvironmentOptions::test_shard,
             kAllowedInEnvvar);
   AddOption("--test-udp-no-try-send", "",  // For testing only.
             &EnvironmentOptions::test_udp_no_try_send);
@@ -630,6 +675,14 @@ EnvironmentOptionsParser::EnvironmentOptionsParser() {
   AddOption("--trace-warnings",
             "show stack traces on process warnings",
             &EnvironmentOptions::trace_warnings,
+            kAllowedInEnvvar);
+  AddOption("--trace-promises",
+            "show stack traces on promise initialization and resolution",
+            &EnvironmentOptions::trace_promises,
+            kAllowedInEnvvar);
+  AddOption("--experimental-default-type",
+            "set module system to use by default",
+            &EnvironmentOptions::type,
             kAllowedInEnvvar);
   AddOption("--extra-info-on-fatal-exception",
             "hide extra information on fatal exception that causes exit",
@@ -732,6 +785,12 @@ EnvironmentOptionsParser::EnvironmentOptionsParser() {
             "set default TLS maximum to TLSv1.3 (default: TLSv1.3)",
             &EnvironmentOptions::tls_max_v1_3,
             kAllowedInEnvvar);
+
+  AddOption("--report-exclude-network",
+            "exclude network interface diagnostics."
+            " (default: false)",
+            &EnvironmentOptions::report_exclude_network,
+            kAllowedInEnvvar);
 }
 
 PerIsolateOptionsParser::PerIsolateOptionsParser(
@@ -805,6 +864,12 @@ PerIsolateOptionsParser::PerIsolateOptionsParser(
             "Generate a snapshot blob when the process exits.",
             &PerIsolateOptions::build_snapshot,
             kDisallowedInEnvvar);
+  AddOption("--build-snapshot-config",
+            "Generate a snapshot blob when the process exits using a"
+            "JSON configuration in the specified path.",
+            &PerIsolateOptions::build_snapshot_config,
+            kDisallowedInEnvvar);
+  Implies("--build-snapshot-config", "--build-snapshot");
 
   Insert(eop, &PerIsolateOptions::get_per_env_options);
 }
@@ -1000,17 +1065,17 @@ inline std::string RemoveBrackets(const std::string& host) {
     return host;
 }
 
-inline int ParseAndValidatePort(const std::string& port,
-                                std::vector<std::string>* errors) {
-  char* endptr;
-  errno = 0;
-  const unsigned long result =                 // NOLINT(runtime/int)
-    strtoul(port.c_str(), &endptr, 10);
-  if (errno != 0 || *endptr != '\0'||
-      (result != 0 && result < 1024) || result > 65535) {
+inline uint16_t ParseAndValidatePort(const std::string_view port,
+                                     std::vector<std::string>* errors) {
+  uint16_t result{};
+  auto r = std::from_chars(port.data(), port.data() + port.size(), result);
+
+  if (r.ec == std::errc::result_out_of_range ||
+      (result != 0 && result < 1024)) {
     errors->push_back(" must be 0 or in range 1024 to 65535.");
   }
-  return static_cast<int>(result);
+
+  return result;
 }
 
 HostPort SplitHostPort(const std::string& arg,
@@ -1238,6 +1303,18 @@ void GetEmbedderOptions(const FunctionCallbackInfo<Value>& args) {
            FIXED_ONE_BYTE_STRING(env->isolate(), "noGlobalSearchPaths"),
            Boolean::New(isolate, env->no_global_search_paths()))
       .IsNothing()) return;
+
+  if (ret->Set(context,
+               FIXED_ONE_BYTE_STRING(env->isolate(), "noBrowserGlobals"),
+               Boolean::New(isolate, env->no_browser_globals()))
+          .IsNothing())
+    return;
+
+  if (ret->Set(context,
+               FIXED_ONE_BYTE_STRING(env->isolate(), "hasEmbedderPreload"),
+               Boolean::New(isolate, env->embedder_preload() != nullptr))
+          .IsNothing())
+    return;
 
   args.GetReturnValue().Set(ret);
 }

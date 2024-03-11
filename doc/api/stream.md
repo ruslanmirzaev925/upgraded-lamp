@@ -278,7 +278,7 @@ run().catch(console.error);
 rs.resume(); // Drain the stream.
 ```
 
-The `finished` API provides [callback version][stream-finished]:
+The `finished` API also provides a [callback version][stream-finished].
 
 ### Object mode
 
@@ -1918,7 +1918,9 @@ has less then 64 KiB of data because no `highWaterMark` option is provided to
 ##### `readable[Symbol.asyncDispose]()`
 
 <!-- YAML
-added: REPLACEME
+added:
+ - v20.4.0
+ - v18.18.0
 -->
 
 > Stability: 1 - Experimental
@@ -2023,6 +2025,12 @@ showBoth();
 added:
   - v17.4.0
   - v16.14.0
+changes:
+  - version:
+    - v20.7.0
+    - v18.19.0
+    pr-url: https://github.com/nodejs/node/pull/49249
+    description: added `highWaterMark` in options.
 -->
 
 > Stability: 1 - Experimental
@@ -2036,6 +2044,8 @@ added:
 * `options` {Object}
   * `concurrency` {number} the maximum concurrent invocation of `fn` to call
     on the stream at once. **Default:** `1`.
+  * `highWaterMark` {number} how many items to buffer while waiting for user
+    consumption of the mapped items. **Default:** `concurrency * 2 - 1`.
   * `signal` {AbortSignal} allows destroying the stream if the signal is
     aborted.
 * Returns: {Readable} a stream mapped with the function `fn`.
@@ -2070,6 +2080,12 @@ for await (const result of dnsResults) {
 added:
   - v17.4.0
   - v16.14.0
+changes:
+  - version:
+    - v20.7.0
+    - v18.19.0
+    pr-url: https://github.com/nodejs/node/pull/49249
+    description: added `highWaterMark` in options.
 -->
 
 > Stability: 1 - Experimental
@@ -2082,6 +2098,8 @@ added:
 * `options` {Object}
   * `concurrency` {number} the maximum concurrent invocation of `fn` to call
     on the stream at once. **Default:** `1`.
+  * `highWaterMark` {number} how many items to buffer while waiting for user
+    consumption of the filtered items. **Default:** `concurrency * 2 - 1`.
   * `signal` {AbortSignal} allows destroying the stream if the signal is
     aborted.
 * Returns: {Readable} a stream filtered with the predicate `fn`.
@@ -2644,10 +2662,8 @@ changes:
                  finished before the call to `finished(stream, cb)`.
 -->
 
-* `stream` {Stream|ReadableStream|WritableStream}
-
-A readable and/or writable stream/webstream.
-
+* `stream` {Stream|ReadableStream|WritableStream} A readable and/or writable
+  stream/webstream.
 * `options` {Object}
   * `error` {boolean} If set to `false`, then a call to `emit('error', err)` is
     not treated as finished. **Default:** `true`.
@@ -2663,10 +2679,8 @@ A readable and/or writable stream/webstream.
     listeners added by this function will also be removed.
   * `cleanup` {boolean} remove all registered stream listeners.
     **Default:** `false`.
-
 * `callback` {Function} A callback function that takes an optional error
   argument.
-
 * Returns: {Function} A cleanup function which removes all registered
   listeners.
 
@@ -2821,6 +2835,11 @@ const server = http.createServer((req, res) => {
 added: v16.9.0
 changes:
   - version:
+    - v21.1.0
+    - v20.10.0
+    pr-url: https://github.com/nodejs/node/pull/50187
+    description: Added support for stream class.
+  - version:
     - v19.8.0
     - v18.16.0
     pr-url: https://github.com/nodejs/node/pull/46675
@@ -2830,7 +2849,7 @@ changes:
 > Stability: 1 - `stream.compose` is experimental.
 
 * `streams` {Stream\[]|Iterable\[]|AsyncIterable\[]|Function\[]|
-  ReadableStream\[]|WritableStream\[]|TransformStream\[]}
+  ReadableStream\[]|WritableStream\[]|TransformStream\[]|Duplex\[]|Function}
 * Returns: {stream.Duplex}
 
 Combines two or more streams into a `Duplex` stream that writes to the
@@ -3075,7 +3094,9 @@ added: v17.0.0
 <!-- YAML
 added: v16.8.0
 changes:
-  - version: v19.5.0
+  - version:
+    - v19.5.0
+    - v18.17.0
     pr-url: https://github.com/nodejs/node/pull/46190
     description: The `src` argument can now be a `ReadableStream` or
                  `WritableStream`.
@@ -3272,9 +3293,8 @@ changes:
 -->
 
 * `signal` {AbortSignal} A signal representing possible cancellation
-* `stream` {Stream|ReadableStream|WritableStream}
-
-A stream to attach a signal to.
+* `stream` {Stream|ReadableStream|WritableStream} A stream to attach a signal
+  to.
 
 Attaches an AbortSignal to a readable or writeable stream. This lets code
 control stream destruction using an `AbortController`.
@@ -3353,7 +3373,9 @@ reader.read().then(({ value, done }) => {
 ### `stream.getDefaultHighWaterMark(objectMode)`
 
 <!-- YAML
-added: v19.9.0
+added:
+  - v19.9.0
+  - v18.17.0
 -->
 
 * `objectMode` {boolean}
@@ -3365,7 +3387,9 @@ Defaults to `16384` (16 KiB), or `16` for `objectMode`.
 ### `stream.setDefaultHighWaterMark(objectMode, value)`
 
 <!-- YAML
-added: v19.9.0
+added:
+  - v19.9.0
+  - v18.17.0
 -->
 
 * `objectMode` {boolean}
@@ -4528,7 +4552,8 @@ The `callback` function must be called only when the current chunk is completely
 consumed. The first argument passed to the `callback` must be an `Error` object
 if an error occurred while processing the input or `null` otherwise. If a second
 argument is passed to the `callback`, it will be forwarded on to the
-`transform.push()` method. In other words, the following are equivalent:
+`transform.push()` method, but only if the first argument is falsy. In other
+words, the following are equivalent:
 
 ```js
 transform.prototype._transform = function(data, encoding, callback) {

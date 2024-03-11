@@ -1,4 +1,3 @@
-// Flags: --no-warnings
 'use strict';
 const common = require('../../../common');
 const assert = require('assert');
@@ -12,7 +11,7 @@ describe('describe hooks', () => {
   before(function() {
     testArr.push('before ' + this.name);
   });
-  after(function() {
+  after(common.mustCall(function() {
     testArr.push('after ' + this.name);
     assert.deepStrictEqual(testArr, [
       'before describe hooks',
@@ -24,7 +23,7 @@ describe('describe hooks', () => {
       'after nested',
       'after describe hooks',
     ]);
-  });
+  }));
   beforeEach(function() {
     testArr.push('beforeEach ' + this.name);
   });
@@ -53,16 +52,41 @@ describe('describe hooks', () => {
   });
 });
 
+describe('describe hooks - no subtests', () => {
+  const testArr = [];
+  before(function() {
+    testArr.push('before ' + this.name);
+  });
+  after(common.mustCall(function() {
+    testArr.push('after ' + this.name);
+    assert.deepStrictEqual(testArr, [
+      'before describe hooks - no subtests',
+      'after describe hooks - no subtests',
+    ]);
+  }));
+  beforeEach(common.mustNotCall());
+  afterEach(common.mustNotCall());
+});
+
 describe('before throws', () => {
   before(() => { throw new Error('before'); });
   it('1', () => {});
   test('2', () => {});
 });
 
+describe('before throws - no subtests', () => {
+  before(() => { throw new Error('before'); });
+  after(common.mustCall());
+});
+
 describe('after throws', () => {
   after(() => { throw new Error('after'); });
   it('1', () => {});
   test('2', () => {});
+});
+
+describe('after throws - no subtests', () => {
+  after(() => { throw new Error('after'); });
 });
 
 describe('beforeEach throws', () => {
@@ -124,12 +148,47 @@ test('test hooks', async (t) => {
   }));
 });
 
+
+test('test hooks - no subtests', async (t) => {
+  const testArr = [];
+
+  t.before((t) => testArr.push('before ' + t.name));
+  t.after(common.mustCall((t) => testArr.push('after ' + t.name)));
+  t.beforeEach(common.mustNotCall());
+  t.afterEach(common.mustNotCall());
+
+  t.after(common.mustCall(() => {
+    assert.deepStrictEqual(testArr, [
+      'before test hooks - no subtests',
+      'after test hooks - no subtests',
+    ]);
+  }));
+});
+
 test('t.before throws', async (t) => {
   t.after(common.mustCall());
   t.before(() => { throw new Error('before'); });
   await t.test('1', () => {});
   await t.test('2', () => {});
 });
+
+test('t.before throws - no subtests', async (t) => {
+  t.after(common.mustCall());
+  t.before(() => { throw new Error('before'); });
+});
+
+test('t.after throws', async (t) => {
+  t.before(common.mustCall());
+  t.after(() => { throw new Error('after'); });
+  await t.test('1', () => {});
+  await t.test('2', () => {});
+});
+
+test('t.after throws - no subtests', async (t) => {
+  t.before(common.mustCall());
+  t.after(() => { throw new Error('after'); });
+});
+
 
 test('t.beforeEach throws', async (t) => {
   t.after(common.mustCall());
@@ -153,6 +212,25 @@ test('afterEach when test fails', async (t) => {
   await t.test('2', () => {});
 });
 
+test('afterEach context when test passes', async (t) => {
+  t.afterEach(common.mustCall((ctx) => {
+    assert.strictEqual(ctx.name, '1');
+    assert.strictEqual(ctx.passed, true);
+    assert.strictEqual(ctx.error, null);
+  }));
+  await t.test('1', () => {});
+});
+
+test('afterEach context when test fails', async (t) => {
+  const err = new Error('test');
+  t.afterEach(common.mustCall((ctx) => {
+    assert.strictEqual(ctx.name, '1');
+    assert.strictEqual(ctx.passed, false);
+    assert.strictEqual(ctx.error, err);
+  }));
+  await t.test('1', () => { throw err });
+});
+
 test('afterEach throws and test fails', async (t) => {
   t.after(common.mustCall());
   t.afterEach(() => { throw new Error('afterEach'); });
@@ -165,6 +243,14 @@ test('t.after() is called if test body throws', (t) => {
     t.diagnostic('- after() called');
   });
   throw new Error('bye');
+});
+
+describe('run after when before throws', () => {
+  after(common.mustCall(() => {
+    console.log("- after() called")
+  }));
+  before(() => { throw new Error('before')});
+  it('1', () => {});
 });
 
 before((t) => t.diagnostic('before 2 called'));

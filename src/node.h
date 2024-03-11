@@ -80,6 +80,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <ostream>
 
 // We cannot use __POSIX__ in this header because that's only defined when
@@ -261,6 +262,12 @@ enum Flags : uint32_t {
   kNoUseLargePages = 1 << 11,
   // Skip printing output for --help, --version, --v8-options.
   kNoPrintHelpOrVersionOutput = 1 << 12,
+  // Do not perform cppgc initialization. If set, the embedder must call
+  // cppgc::InitializeProcess() before creating a Node.js environment
+  // and call cppgc::ShutdownProcess() before process shutdown.
+  kNoInitializeCppgc = 1 << 13,
+  // Initialize the process for predictable snapshot generation.
+  kGeneratePredictableSnapshot = 1 << 14,
 
   // Emulate the behavior of InitializeNodeWithArgs() when passing
   // a flags argument to the InitializeOncePerProcess() replacement
@@ -269,7 +276,7 @@ enum Flags : uint32_t {
       kNoStdioInitialization | kNoDefaultSignalHandling | kNoInitializeV8 |
       kNoInitializeNodeV8Platform | kNoInitOpenSSL |
       kNoParseGlobalDebugVariables | kNoAdjustResourceLimits |
-      kNoUseLargePages | kNoPrintHelpOrVersionOutput,
+      kNoUseLargePages | kNoPrintHelpOrVersionOutput | kNoInitializeCppgc,
 };
 }  // namespace ProcessInitializationFlags
 namespace ProcessFlags = ProcessInitializationFlags;  // Legacy alias.
@@ -285,7 +292,7 @@ enum Flags : uint32_t {
 
 class NODE_EXTERN InitializationResult {
  public:
-  virtual ~InitializationResult();
+  virtual ~InitializationResult() = default;
 
   // Returns a suggested process exit code.
   virtual int exit_code() const = 0;
@@ -653,8 +660,35 @@ enum Flags : uint64_t {
 };
 }  // namespace EnvironmentFlags
 
+enum class SnapshotFlags : uint32_t {
+  kDefault = 0,
+  // Whether code cache should be generated as part of the snapshot.
+  // Code cache reduces the time spent on compiling functions included
+  // in the snapshot at the expense of a bigger snapshot size and
+  // potentially breaking portability of the snapshot.
+  kWithoutCodeCache = 1 << 0,
+};
+
+struct SnapshotConfig {
+  SnapshotFlags flags = SnapshotFlags::kDefault;
+
+  // When builder_script_path is std::nullopt, the snapshot is generated as a
+  // built-in snapshot instead of a custom one, and it's expected that the
+  // built-in snapshot only contains states that reproduce in every run of the
+  // application. The event loop won't be run when generating a built-in
+  // snapshot, so asynchronous operations should be avoided.
+  //
+  // When builder_script_path is an std::string, it should match args[1]
+  // passed to CreateForSnapshotting(). The embedder is also expected to use
+  // LoadEnvironment() to run a script matching this path. In that case the
+  // snapshot is generated as a custom snapshot and the event loop is run, so
+  // the snapshot builder can execute asynchronous operations as long as they
+  // are run to completion when the snapshot is taken.
+  std::optional<std::string> builder_script_path;
+};
+
 struct InspectorParentHandle {
-  virtual ~InspectorParentHandle();
+  virtual ~InspectorParentHandle() = default;
 };
 
 // TODO(addaleax): Maybe move per-Environment options parsing here.
@@ -697,12 +731,33 @@ struct StartExecutionCallbackInfo {
 
 using StartExecutionCallback =
     std::function<v8::MaybeLocal<v8::Value>(const StartExecutionCallbackInfo&)>;
+using EmbedderPreloadCallback =
+    std::function<void(Environment* env,
+                       v8::Local<v8::Value> process,
+                       v8::Local<v8::Value> require)>;
 
+// Run initialization for the environment.
+//
+// The |preload| function, usually used by embedders to inject scripts,
+// will be run by Node.js before Node.js executes the entry point.
+// The function is guaranteed to run before the user land module loader running
+// any user code, so it is safe to assume that at this point, no user code has
+// been run yet.
+// The function will be executed with preload(process, require), and the passed
+// require function has access to internal Node.js modules. There is no
+// stability guarantee about the internals exposed to the internal require
+// function. Expect breakages when updating Node.js versions if the embedder
+// imports internal modules with the internal require function.
+// Worker threads created in the environment will also respect The |preload|
+// function, so make sure the function is thread-safe.
 NODE_EXTERN v8::MaybeLocal<v8::Value> LoadEnvironment(
     Environment* env,
-    StartExecutionCallback cb);
+    StartExecutionCallback cb,
+    EmbedderPreloadCallback preload = nullptr);
 NODE_EXTERN v8::MaybeLocal<v8::Value> LoadEnvironment(
-    Environment* env, std::string_view main_script_source_utf8);
+    Environment* env,
+    std::string_view main_script_source_utf8,
+    EmbedderPreloadCallback preload = nullptr);
 NODE_EXTERN void FreeEnvironment(Environment* env);
 
 // Set a callback that is called when process.exit() is called from JS,
@@ -864,7 +919,8 @@ class NODE_EXTERN CommonEnvironmentSetup {
       MultiIsolatePlatform* platform,
       std::vector<std::string>* errors,
       const std::vector<std::string>& args = {},
-      const std::vector<std::string>& exec_args = {});
+      const std::vector<std::string>& exec_args = {},
+      const SnapshotConfig& snapshot_config = {});
   EmbedderSnapshotData::Pointer CreateSnapshot();
 
   struct uv_loop_s* event_loop() const;
@@ -899,7 +955,8 @@ class NODE_EXTERN CommonEnvironmentSetup {
       std::vector<std::string>*,
       const EmbedderSnapshotData*,
       uint32_t flags,
-      std::function<Environment*(const CommonEnvironmentSetup*)>);
+      std::function<Environment*(const CommonEnvironmentSetup*)>,
+      const SnapshotConfig* config = nullptr);
 };
 
 // Implementation for CommonEnvironmentSetup::Create
@@ -1485,6 +1542,25 @@ void RegisterSignalHandler(int signal,
                                            void* ucontext),
                            bool reset_handler = false);
 #endif  // _WIN32
+
+// Configure the layout of the JavaScript object with a cppgc::GarbageCollected
+// instance so that when the JavaScript object is reachable, the garbage
+// collected instance would have its Trace() method invoked per the cppgc
+// contract. To make it work, the process must have called
+// cppgc::InitializeProcess() before, which is usually the case for addons
+// loaded by the stand-alone Node.js executable. Embedders of Node.js can use
+// either need to call it themselves or make sure that
+// ProcessInitializationFlags::kNoInitializeCppgc is *not* set for cppgc to
+// work.
+// If the CppHeap is owned by Node.js, which is usually the case for addon,
+// the object must be created with at least two internal fields available,
+// and the first two internal fields would be configured by Node.js.
+// This may be superseded by a V8 API in the future, see
+// https://bugs.chromium.org/p/v8/issues/detail?id=13960. Until then this
+// serves as a helper for Node.js isolates.
+NODE_EXTERN void SetCppgcReference(v8::Isolate* isolate,
+                                   v8::Local<v8::Object> object,
+                                   void* wrappable);
 
 }  // namespace node
 

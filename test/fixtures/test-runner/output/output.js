@@ -212,20 +212,6 @@ test('test with a name and options provided', { skip: true });
 // A test with only options and a function provided.
 test({ skip: true }, function functionAndOptions() {});
 
-// A test whose description needs to be escaped.
-test('escaped description \\ # \\#\\ \n \t \f \v \b \r');
-
-// A test whose skip message needs to be escaped.
-test('escaped skip message', { skip: '#skip' });
-
-// A test whose todo message needs to be escaped.
-test('escaped todo message', { todo: '#todo' });
-
-// A test with a diagnostic message that needs to be escaped.
-test('escaped diagnostic', (t) => {
-  t.diagnostic('#diagnostic');
-});
-
 test('callback pass', (t, done) => {
   setImmediate(done);
 });
@@ -396,8 +382,16 @@ test('assertion errors display actual and expected properly', async () => {
   circular.c = circular;
   const tmpLimit = Error.stackTraceLimit;
   Error.stackTraceLimit = 1;
+  const boo = [1];
+  const baz = {
+    date: new Date(0),
+    null: null,
+    number: 1,
+    string: 'Hello',
+    undefined: undefined,
+  }
   try {
-    assert.deepEqual({ foo: 1, bar: 1 }, circular); // eslint-disable-line no-restricted-properties
+    assert.deepEqual({ foo: 1, bar: 1, boo, baz }, { boo, baz, circular }); // eslint-disable-line no-restricted-properties
   } catch (err) {
     Error.stackTraceLimit = tmpLimit;
     throw err;

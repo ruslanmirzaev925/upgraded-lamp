@@ -6,6 +6,9 @@ description: More than you probably want to know about npm configuration
 
 ### Description
 
+This article details npm configuration in general. To learn about the `config` command,
+see [`npm config`](/commands/npm-config).
+
 npm gets its configuration values from the following sources, sorted by priority:
 
 #### Command Line Flags
@@ -345,6 +348,16 @@ Run git commit hooks when using the `npm version` command.
 
 
 
+#### `cpu`
+
+* Default: null
+* Type: null or String
+
+Override CPU architecture of native modules to install. Acceptable values
+are same as `cpu` field of package.json, which comes from `process.arch`.
+
+
+
 #### `depth`
 
 * Default: `Infinity` if `--all` is set, otherwise `1`
@@ -479,6 +492,25 @@ This can be overridden by setting the `--force` flag.
 
 
 
+#### `expect-result-count`
+
+* Default: null
+* Type: null or Number
+
+Tells to expect a specific number of results from the command.
+
+This config can not be used with: `expect-results`
+
+#### `expect-results`
+
+* Default: null
+* Type: null or Boolean
+
+Tells npm whether or not to expect results from the command. Can be either
+true (expect some results) or false (expect no results).
+
+This config can not be used with: `expect-result-count`
+
 #### `fetch-retries`
 
 * Default: 2
@@ -560,7 +592,8 @@ recommended that you do not use this option!
 
 #### `foreground-scripts`
 
-* Default: false
+* Default: `false` unless when using `npm pack` or `npm publish` where it
+  defaults to `true`
 * Type: Boolean
 
 Run all build scripts (ie, `preinstall`, `install`, and `postinstall`)
@@ -845,6 +878,16 @@ Use of `legacy-peer-deps` is not recommended, as it will not enforce the
 
 
 
+#### `libc`
+
+* Default: null
+* Type: null or String
+
+Override libc of native modules to install. Acceptable values are same as
+`libc` field of package.json
+
+
+
 #### `link`
 
 * Default: false
@@ -1035,6 +1078,16 @@ This option causes npm to create lock files without a `resolved` key for
 registry dependencies. Subsequent installs will need to resolve tarball
 endpoints with the configured registry, likely resulting in a longer install
 time.
+
+
+
+#### `os`
+
+* Default: null
+* Type: null or String
+
+Override OS of native modules to install. Acceptable values are same as `os`
+field of package.json, which comes from `process.platform`.
 
 
 
@@ -1335,6 +1388,26 @@ you want to move it to be a non-optional production dependency.
 
 This is the default behavior if `--save` is true, and neither `--save-dev`
 or `--save-optional` are true.
+
+
+
+#### `sbom-format`
+
+* Default: null
+* Type: "cyclonedx" or "spdx"
+
+SBOM format to use when generating SBOMs.
+
+
+
+#### `sbom-type`
+
+* Default: "library"
+* Type: "library", "application", or "framework"
+
+The type of package described by the generated SBOM. For SPDX, this is the
+value for the `primaryPackagePurpose` field. For CycloneDX, this is the
+value for the `type` field.
 
 
 
@@ -1775,20 +1848,6 @@ registry-scoped "certfile" path like
 
 
 
-#### `ci-name`
-
-* Default: The name of the current CI system, or `null` when not on a known CI
-  platform.
-* Type: null or String
-* DEPRECATED: This config is deprecated and will not be changeable in future
-  version of npm.
-
-The name of a continuous integration system. If not set explicitly, npm will
-detect the current CI environment using the
-[`ci-info`](http://npm.im/ci-info) module.
-
-
-
 #### `dev`
 
 * Default: false
@@ -1946,20 +2005,6 @@ Alias for `--omit=dev`
 * DEPRECATED: Use the --package-lock setting instead.
 
 Alias for --package-lock
-
-
-
-#### `tmp`
-
-* Default: The value returned by the Node.js `os.tmpdir()` method
-  <https://nodejs.org/api/os.html#os_os_tmpdir>
-* Type: Path
-* DEPRECATED: This setting is no longer used. npm stores temporary files in a
-  special location in the cache, and they are managed by
-  [`cacache`](http://npm.im/cacache).
-
-Historically, the location where temporary files were stored. No longer
-relevant.
 
 
 

@@ -16,8 +16,8 @@ const {
 
 const { once } = require('events');
 
-const { promisify, inspect } = require('util');
-const delay = promisify(setTimeout);
+const { inspect } = require('util');
+const { setTimeout: delay } = require('timers/promises');
 
 // The globals are defined.
 ok(Event);
@@ -737,4 +737,11 @@ let asyncTest = Promise.resolve();
   et.addEventListener('foo', common.mustNotCall(), { signal });
   controller.abort();
   et.dispatchEvent(new Event('foo'));
+}
+
+{
+  const event = new Event('foo');
+  strictEqual(event.cancelBubble, false);
+  event.cancelBubble = true;
+  strictEqual(event.cancelBubble, true);
 }

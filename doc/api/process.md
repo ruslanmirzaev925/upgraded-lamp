@@ -360,12 +360,13 @@ exit with 0.
 
 ```mjs
 import process from 'node:process';
+import fs from 'node:fs';
 
 process.on('uncaughtException', (err, origin) => {
   fs.writeSync(
     process.stderr.fd,
     `Caught exception: ${err}\n` +
-    `Exception origin: ${origin}`,
+    `Exception origin: ${origin}\n`,
   );
 });
 
@@ -380,12 +381,13 @@ console.log('This will not run.');
 
 ```cjs
 const process = require('node:process');
+const fs = require('node:fs');
 
 process.on('uncaughtException', (err, origin) => {
   fs.writeSync(
     process.stderr.fd,
     `Caught exception: ${err}\n` +
-    `Exception origin: ${origin}`,
+    `Exception origin: ${origin}\n`,
   );
 });
 
@@ -606,7 +608,10 @@ process.on('warning', (warning) => {
 
 By default, Node.js will print process warnings to `stderr`. The `--no-warnings`
 command-line option can be used to suppress the default console output but the
-`'warning'` event will still be emitted by the `process` object.
+`'warning'` event will still be emitted by the `process` object. Currently, it
+is not possible to suppress specific warning types other than deprecation
+warnings. To suppress deprecation warnings, check out the [`--no-deprecation`][]
+flag.
 
 The following example illustrates the warning that is printed to `stderr` when
 too many listeners have been added to an event:
@@ -647,18 +652,6 @@ of the custom deprecation.
 The `*-deprecation` command-line flags only affect warnings that use the name
 `'DeprecationWarning'`.
 
-### Event: `'worker'`
-
-<!-- YAML
-added:
-  - v16.2.0
-  - v14.18.0
--->
-
-* `worker` {Worker} The {Worker} that was created.
-
-The `'worker'` event is emitted after a new {Worker} thread has been created.
-
 #### Emitting custom warnings
 
 See the [`process.emitWarning()`][process_emit_warning] method for issuing
@@ -686,6 +679,18 @@ A few of the warning types that are most common include:
 * `'UnsupportedWarning'` - Indicates use of an unsupported option or feature
   that will be ignored rather than treated as an error. One example is use of
   the HTTP response status message when using the HTTP/2 compatibility API.
+
+### Event: `'worker'`
+
+<!-- YAML
+added:
+  - v16.2.0
+  - v14.18.0
+-->
+
+* `worker` {Worker} The {Worker} that was created.
+
+The `'worker'` event is emitted after a new {Worker} thread has been created.
 
 ### Signal events
 
@@ -870,8 +875,8 @@ added: v0.5.0
 * {string}
 
 The operating system CPU architecture for which the Node.js binary was compiled.
-Possible values are: `'arm'`, `'arm64'`, `'ia32'`, `'mips'`,`'mipsel'`, `'ppc'`,
-`'ppc64'`, `'s390'`, `'s390x'`, and `'x64'`.
+Possible values are: `'arm'`, `'arm64'`, `'ia32'`, `'loong64'`, `'mips'`,
+`'mipsel'`, `'ppc'`, `'ppc64'`, `'riscv64'`, `'s390'`, `'s390x'`, and `'x64'`.
 
 ```mjs
 import { arch } from 'node:process';
@@ -1666,7 +1671,9 @@ each [`Worker`][] thread has its own copy of `process.env`, based on its
 parent thread's `process.env`, or whatever was specified as the `env` option
 to the [`Worker`][] constructor. Changes to `process.env` will not be visible
 across [`Worker`][] threads, and only the main thread can make changes that
-are visible to the operating system or to native add-ons.
+are visible to the operating system or to native add-ons. On Windows, a copy of
+`process.env` on a [`Worker`][] instance operates in a case-sensitive manner
+unlike the main thread.
 
 ## `process.execArgv`
 
@@ -2254,6 +2261,29 @@ process.kill(process.pid, 'SIGHUP');
 
 When `SIGUSR1` is received by a Node.js process, Node.js will start the
 debugger. See [Signal Events][].
+
+## `process.loadEnvFile(path)`
+
+<!-- YAML
+added: v21.7.0
+-->
+
+> Stability: 1.1 - Active development
+
+* `path` {string | URL | Buffer | undefined}. **Default:** `'./.env'`
+
+Loads the `.env` file into `process.env`. Usage of `NODE_OPTIONS`
+in the `.env` file will not have any effect on Node.js.
+
+```cjs
+const { loadEnvFile } = require('node:process');
+loadEnvFile();
+```
+
+```mjs
+import { loadEnvFile } from 'node:process';
+loadEnvFile();
+```
 
 ## `process.mainModule`
 
@@ -3515,6 +3545,21 @@ throw an error.
 Using this function is mutually exclusive with using the deprecated
 [`domain`][] built-in module.
 
+## `process.sourceMapsEnabled`
+
+<!-- YAML
+added:
+  - v20.7.0
+  - v18.19.0
+-->
+
+> Stability: 1 - Experimental
+
+* {boolean}
+
+The `process.sourceMapsEnabled` property returns whether the
+[Source Map v3][Source Map] support for stack traces is enabled.
+
 ## `process.stderr`
 
 * {Stream}
@@ -3908,8 +3953,8 @@ cases:
   and generally can only happen during development of Node.js itself.
 * `12` **Invalid Debug Argument**: The `--inspect` and/or `--inspect-brk`
   options were set, but the port number chosen was invalid or unavailable.
-* `13` **Unfinished Top-Level Await**: `await` was used outside of a function
-  in the top-level code, but the passed `Promise` never resolved.
+* `13` **Unsettled Top-Level Await**: `await` was used outside of a function
+  in the top-level code, but the passed `Promise` never settled.
 * `14` **Snapshot Failure**: Node.js was started to build a V8 startup
   snapshot and it failed because certain requirements of the state of
   the application were not met.
@@ -3926,7 +3971,7 @@ cases:
 [Child Process]: child_process.md
 [Cluster]: cluster.md
 [Duplex]: stream.md#duplex-and-transform-streams
-[Event Loop]: https://nodejs.org/en/docs/guides/event-loop-timers-and-nexttick/#process-nexttick
+[Event Loop]: https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick#understanding-processnexttick
 [LTS]: https://github.com/nodejs/Release
 [Permission Model]: permissions.md#permission-model
 [Readable]: stream.md#readable-streams
@@ -3939,6 +3984,7 @@ cases:
 [`'message'`]: child_process.md#event-message
 [`'uncaughtException'`]: #event-uncaughtexception
 [`--experimental-permission`]: cli.md#--experimental-permission
+[`--no-deprecation`]: cli.md#--no-deprecation
 [`--unhandled-rejections`]: cli.md#--unhandled-rejectionsmode
 [`Buffer`]: buffer.md
 [`ChildProcess.disconnect()`]: child_process.md#subprocessdisconnect

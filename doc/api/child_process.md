@@ -842,7 +842,7 @@ pipes between the parent and child. The value is one of the following:
    file, socket, or a pipe with the child process. The stream's underlying
    file descriptor is duplicated in the child process to the fd that
    corresponds to the index in the `stdio` array. The stream must have an
-   underlying descriptor (file streams do not until the `'open'` event has
+   underlying descriptor (file streams do not start until the `'open'` event has
    occurred).
 7. Positive integer: The integer value is interpreted as a file descriptor
    that is open in the parent process. It is shared with the child
@@ -872,12 +872,6 @@ is launched with the IPC channel unreferenced (using `unref()`) until the
 child registers an event handler for the [`'disconnect'`][] event
 or the [`'message'`][] event. This allows the child to exit
 normally without the process being held open by the open IPC channel._
-
-On Unix-like operating systems, the [`child_process.spawn()`][] method
-performs memory operations synchronously before decoupling the event loop
-from the child. Applications with a large memory footprint may find frequent
-[`child_process.spawn()`][] calls to be a bottleneck. For more information,
-see [V8 issue 7381](https://bugs.chromium.org/p/v8/issues/detail?id=7381).
 
 See also: [`child_process.exec()`][] and [`child_process.fork()`][].
 
@@ -925,8 +919,8 @@ changes:
 * `options` {Object}
   * `cwd` {string|URL} Current working directory of the child process.
   * `input` {string|Buffer|TypedArray|DataView} The value which will be passed
-    as stdin to the spawned process. Supplying this value will override
-    `stdio[0]`.
+    as stdin to the spawned process. If `stdio[0]` is set to `'pipe'`, Supplying
+    this value will override `stdio[0]`.
   * `stdio` {string|Array} Child's stdio configuration. `stderr` by default will
     be output to the parent process' stderr unless `stdio` is specified.
     **Default:** `'pipe'`.
@@ -995,8 +989,8 @@ changes:
 * `options` {Object}
   * `cwd` {string|URL} Current working directory of the child process.
   * `input` {string|Buffer|TypedArray|DataView} The value which will be passed
-    as stdin to the spawned process. Supplying this value will override
-    `stdio[0]`.
+    as stdin to the spawned process. If `stdio[0]` is set to `'pipe'`, Supplying
+    this value will override `stdio[0]`.
   * `stdio` {string|Array} Child's stdio configuration. `stderr` by default will
     be output to the parent process' stderr unless `stdio` is specified.
     **Default:** `'pipe'`.
@@ -1071,11 +1065,11 @@ changes:
 * `options` {Object}
   * `cwd` {string|URL} Current working directory of the child process.
   * `input` {string|Buffer|TypedArray|DataView} The value which will be passed
-    as stdin to the spawned process. Supplying this value will override
-    `stdio[0]`.
+    as stdin to the spawned process. If `stdio[0]` is set to `'pipe'`, Supplying
+    this value will override `stdio[0]`.
   * `argv0` {string} Explicitly set the value of `argv[0]` sent to the child
     process. This will be set to `command` if not specified.
-  * `stdio` {string|Array} Child's stdio configuration.
+  * `stdio` {string|Array} Child's stdio configuration. **Default:** `'pipe'`.
   * `env` {Object} Environment key-value pairs. **Default:** `process.env`.
   * `uid` {number} Sets the user identity of the process (see setuid(2)).
   * `gid` {number} Sets the group identity of the process (see setgid(2)).
@@ -1401,6 +1395,18 @@ setTimeout(() => {
   subprocess.kill(); // Does not terminate the Node.js process in the shell.
 }, 2000);
 ```
+
+### `subprocess[Symbol.dispose]()`
+
+<!-- YAML
+added:
+ - v20.5.0
+ - v18.18.0
+-->
+
+> Stability: 1 - Experimental
+
+Calls [`subprocess.kill()`][] with `'SIGTERM'`.
 
 ### `subprocess.killed`
 

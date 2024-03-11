@@ -59,6 +59,12 @@ extern "C" {
 #include <stdio.h>
 #include <stdint.h>
 
+/* Internal type, do not use. */
+struct uv__queue {
+  struct uv__queue* next;
+  struct uv__queue* prev;
+};
+
 #if defined(_WIN32)
 # include "uv/win.h"
 #else
@@ -150,6 +156,7 @@ extern "C" {
   XX(EILSEQ, "illegal byte sequence")                                         \
   XX(ESOCKTNOSUPPORT, "socket type not supported")                            \
   XX(ENODATA, "no data available")                                            \
+  XX(EUNATCH, "protocol driver not attached")                                 \
 
 #define UV_HANDLE_TYPE_MAP(XX)                                                \
   XX(ASYNC, async)                                                            \
@@ -283,13 +290,13 @@ UV_EXTERN int uv_loop_init(uv_loop_t* loop);
 UV_EXTERN int uv_loop_close(uv_loop_t* loop);
 /*
  * NOTE:
- *  This function is DEPRECATED (to be removed after 0.12), users should
+ *  This function is DEPRECATED, users should
  *  allocate the loop manually and use uv_loop_init instead.
  */
 UV_EXTERN uv_loop_t* uv_loop_new(void);
 /*
  * NOTE:
- *  This function is DEPRECATED (to be removed after 0.12). Users should use
+ *  This function is DEPRECATED. Users should use
  *  uv_loop_close and free the memory manually instead.
  */
 UV_EXTERN void uv_loop_delete(uv_loop_t*);
@@ -459,7 +466,7 @@ struct uv_shutdown_s {
   uv_handle_type type;                                                        \
   /* private */                                                               \
   uv_close_cb close_cb;                                                       \
-  void* handle_queue[2];                                                      \
+  struct uv__queue handle_queue;                                              \
   union {                                                                     \
     int fd;                                                                   \
     void* reserved[4];                                                        \
@@ -801,6 +808,10 @@ inline int uv_tty_set_mode(uv_tty_t* handle, int mode) {
 
 UV_EXTERN uv_handle_type uv_guess_handle(uv_file file);
 
+enum {
+  UV_PIPE_NO_TRUNCATE = 1u << 0
+};
+
 /*
  * uv_pipe_t is a subclass of uv_stream_t.
  *
@@ -817,9 +828,19 @@ struct uv_pipe_s {
 UV_EXTERN int uv_pipe_init(uv_loop_t*, uv_pipe_t* handle, int ipc);
 UV_EXTERN int uv_pipe_open(uv_pipe_t*, uv_file file);
 UV_EXTERN int uv_pipe_bind(uv_pipe_t* handle, const char* name);
+UV_EXTERN int uv_pipe_bind2(uv_pipe_t* handle,
+                            const char* name,
+                            size_t namelen,
+                            unsigned int flags);
 UV_EXTERN void uv_pipe_connect(uv_connect_t* req,
                                uv_pipe_t* handle,
                                const char* name,
+                               uv_connect_cb cb);
+UV_EXTERN int uv_pipe_connect2(uv_connect_t* req,
+                               uv_pipe_t* handle,
+                               const char* name,
+                               size_t namelen,
+                               unsigned int flags,
                                uv_connect_cb cb);
 UV_EXTERN int uv_pipe_getsockname(const uv_pipe_t* handle,
                                   char* buffer,
@@ -1085,7 +1106,14 @@ enum uv_process_flags {
    * option is only meaningful on Windows systems. On Unix it is silently
    * ignored.
    */
-  UV_PROCESS_WINDOWS_HIDE_GUI = (1 << 6)
+  UV_PROCESS_WINDOWS_HIDE_GUI = (1 << 6),
+  /*
+   * On Windows, if the path to the program to execute, specified in
+   * uv_process_options_t's file field, has a directory component,
+   * search for the exact file name before trying variants with
+   * extensions like '.exe' or '.cmd'.
+   */
+  UV_PROCESS_WINDOWS_FILE_PATH_EXACT_NAME = (1 << 7)
 };
 
 /*
@@ -1262,6 +1290,17 @@ UV_EXTERN uv_pid_t uv_os_getppid(void);
 
 UV_EXTERN int uv_os_getpriority(uv_pid_t pid, int* priority);
 UV_EXTERN int uv_os_setpriority(uv_pid_t pid, int priority);
+
+enum {
+  UV_THREAD_PRIORITY_HIGHEST = 2,
+  UV_THREAD_PRIORITY_ABOVE_NORMAL = 1,
+  UV_THREAD_PRIORITY_NORMAL = 0,
+  UV_THREAD_PRIORITY_BELOW_NORMAL = -1,
+  UV_THREAD_PRIORITY_LOWEST = -2,
+};
+
+UV_EXTERN int uv_thread_getpriority(uv_thread_t tid, int* priority);
+UV_EXTERN int uv_thread_setpriority(uv_thread_t tid, int priority);
 
 UV_EXTERN unsigned int uv_available_parallelism(void);
 UV_EXTERN int uv_cpu_info(uv_cpu_info_t** cpu_infos, int* count);
@@ -1849,7 +1888,7 @@ struct uv_loop_s {
   void* data;
   /* Loop reference counting. */
   unsigned int active_handles;
-  void* handle_queue[2];
+  struct uv__queue handle_queue;
   union {
     void* unused;
     unsigned int count;
@@ -1863,6 +1902,18 @@ struct uv_loop_s {
 
 UV_EXTERN void* uv_loop_get_data(const uv_loop_t*);
 UV_EXTERN void uv_loop_set_data(uv_loop_t*, void* data);
+
+/* String utilities needed internally for dealing with Windows. */
+size_t uv_utf16_length_as_wtf8(const uint16_t* utf16,
+                               ssize_t utf16_len);
+int uv_utf16_to_wtf8(const uint16_t* utf16,
+                     ssize_t utf16_len,
+                     char** wtf8_ptr,
+                     size_t* wtf8_len_ptr);
+ssize_t uv_wtf8_length_as_utf16(const char* wtf8);
+void uv_wtf8_to_utf16(const char* wtf8,
+                      uint16_t* utf16,
+                      size_t utf16_len);
 
 /* Don't export the private CPP symbols. */
 #undef UV_HANDLE_TYPE_PRIVATE

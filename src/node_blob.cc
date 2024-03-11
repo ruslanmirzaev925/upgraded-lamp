@@ -41,7 +41,10 @@ namespace {
 // Concatenate multiple ArrayBufferView/ArrayBuffers into a single ArrayBuffer.
 // This method treats all ArrayBufferView types the same.
 void Concat(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+  Isolate* isolate = args.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  Environment* env = Environment::GetCurrent(context);
+
   CHECK(args[0]->IsArray());
   Local<Array> array = args[0].As<Array>();
 
@@ -54,9 +57,14 @@ void Concat(const FunctionCallbackInfo<Value>& args) {
   std::vector<View> views;
   size_t total = 0;
 
-  for (uint32_t n = 0; n < array->Length(); n++) {
-    Local<Value> val;
-    if (!array->Get(env->context(), n).ToLocal(&val)) return;
+  std::vector<v8::Global<Value>> buffers;
+  if (FromV8Array(context, array, &buffers).IsNothing()) {
+    return;
+  }
+
+  size_t count = buffers.size();
+  for (uint32_t i = 0; i < count; i++) {
+    Local<Value> val = buffers[i].Get(isolate);
     if (val->IsArrayBuffer()) {
       auto ab = val.As<ArrayBuffer>();
       views.push_back(View{ab->GetBackingStore(), ab->ByteLength(), 0});
@@ -130,7 +138,7 @@ void Blob::CreatePerContextProperties(Local<Object> target,
                                       Local<Context> context,
                                       void* priv) {
   Realm* realm = Realm::GetCurrent(context);
-  realm->AddBindingData<BlobBindingData>(context, target);
+  realm->AddBindingData<BlobBindingData>(target);
 }
 
 Local<FunctionTemplate> Blob::GetConstructorTemplate(Environment* env) {
@@ -169,21 +177,27 @@ BaseObjectPtr<Blob> Blob::Create(Environment* env,
 }
 
 void Blob::New(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
+  Isolate* isolate = args.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  Environment* env = Environment::GetCurrent(context);
+
   CHECK(args[0]->IsArray());  // sources
 
   Local<Array> array = args[0].As<Array>();
   std::vector<std::unique_ptr<DataQueue::Entry>> entries(array->Length());
 
-  for (size_t i = 0; i < array->Length(); i++) {
-    Local<Value> entry;
-    if (!array->Get(env->context(), i).ToLocal(&entry)) {
-      return;
-    }
+  std::vector<v8::Global<Value>> sources;
+  if (FromV8Array(context, array, &sources).IsNothing()) {
+    return;
+  }
 
-    const auto entryFromArrayBuffer = [env](v8::Local<v8::ArrayBuffer> buf,
-                                            size_t byte_length,
-                                            size_t byte_offset = 0) {
+  size_t count = sources.size();
+  for (size_t i = 0; i < count; i++) {
+    Local<Value> entry = sources[i].Get(isolate);
+
+    const auto entryFromArrayBuffer = [isolate](v8::Local<v8::ArrayBuffer> buf,
+                                                size_t byte_length,
+                                                size_t byte_offset = 0) {
       if (buf->IsDetachable()) {
         std::shared_ptr<BackingStore> store = buf->GetBackingStore();
         USE(buf->Detach(Local<Value>()));
@@ -193,7 +207,7 @@ void Blob::New(const FunctionCallbackInfo<Value>& args) {
 
       // If the ArrayBuffer is not detachable, we will copy from it instead.
       std::shared_ptr<BackingStore> store =
-          ArrayBuffer::NewBackingStore(env->isolate(), byte_length);
+          ArrayBuffer::NewBackingStore(isolate, byte_length);
       uint8_t* ptr = static_cast<uint8_t*>(buf->Data()) + byte_offset;
       std::copy(ptr, ptr + byte_length, static_cast<uint8_t*>(store->Data()));
       return DataQueue::CreateInMemoryEntryFromBackingStore(
@@ -392,7 +406,7 @@ Blob::BlobTransferData::Deserialize(
 }
 
 BaseObject::TransferMode Blob::GetTransferMode() const {
-  return BaseObject::TransferMode::kCloneable;
+  return TransferMode::kCloneable;
 }
 
 std::unique_ptr<worker::TransferData> Blob::CloneForMessaging() const {
@@ -400,20 +414,22 @@ std::unique_ptr<worker::TransferData> Blob::CloneForMessaging() const {
 }
 
 void Blob::StoreDataObject(const v8::FunctionCallbackInfo<v8::Value>& args) {
-  Environment* env = Environment::GetCurrent(args);
-  BlobBindingData* binding_data = Realm::GetBindingData<BlobBindingData>(args);
+  Realm* realm = Realm::GetCurrent(args);
 
   CHECK(args[0]->IsString());  // ID key
-  CHECK(Blob::HasInstance(env, args[1]));  // Blob
+  CHECK(Blob::HasInstance(realm->env(), args[1]));  // Blob
   CHECK(args[2]->IsUint32());  // Length
   CHECK(args[3]->IsString());  // Type
 
-  Utf8Value key(env->isolate(), args[0]);
+  BlobBindingData* binding_data = realm->GetBindingData<BlobBindingData>();
+  Isolate* isolate = realm->isolate();
+
+  Utf8Value key(isolate, args[0]);
   Blob* blob;
   ASSIGN_OR_RETURN_UNWRAP(&blob, args[1]);
 
   size_t length = args[2].As<Uint32>()->Value();
-  Utf8Value type(env->isolate(), args[3]);
+  Utf8Value type(isolate, args[3]);
 
   binding_data->store_data_object(
       std::string(*key, key.length()),
@@ -427,9 +443,11 @@ void Blob::StoreDataObject(const v8::FunctionCallbackInfo<v8::Value>& args) {
 void Blob::RevokeObjectURL(const FunctionCallbackInfo<Value>& args) {
   CHECK_GE(args.Length(), 1);
   CHECK(args[0]->IsString());
-  BlobBindingData* binding_data = Realm::GetBindingData<BlobBindingData>(args);
-  Environment* env = Environment::GetCurrent(args);
-  Utf8Value input(env->isolate(), args[0].As<String>());
+  Realm* realm = Realm::GetCurrent(args);
+  BlobBindingData* binding_data = realm->GetBindingData<BlobBindingData>();
+  Isolate* isolate = realm->isolate();
+
+  Utf8Value input(isolate, args[0].As<String>());
   auto out = ada::parse<ada::url_aggregator>(input.ToStringView());
 
   if (!out) {
@@ -449,36 +467,30 @@ void Blob::RevokeObjectURL(const FunctionCallbackInfo<Value>& args) {
 }
 
 void Blob::GetDataObject(const v8::FunctionCallbackInfo<v8::Value>& args) {
-  BlobBindingData* binding_data = Realm::GetBindingData<BlobBindingData>(args);
-
-  Environment* env = Environment::GetCurrent(args);
   CHECK(args[0]->IsString());
+  Realm* realm = Realm::GetCurrent(args);
+  BlobBindingData* binding_data = realm->GetBindingData<BlobBindingData>();
+  Isolate* isolate = realm->isolate();
 
-  Utf8Value key(env->isolate(), args[0]);
+  Utf8Value key(isolate, args[0]);
 
   BlobBindingData::StoredDataObject stored =
       binding_data->get_data_object(std::string(*key, key.length()));
   if (stored.blob) {
     Local<Value> type;
-    if (!String::NewFromUtf8(
-            env->isolate(),
-            stored.type.c_str(),
-            v8::NewStringType::kNormal,
-            static_cast<int>(stored.type.length())).ToLocal(&type)) {
+    if (!String::NewFromUtf8(isolate,
+                             stored.type.c_str(),
+                             v8::NewStringType::kNormal,
+                             static_cast<int>(stored.type.length()))
+             .ToLocal(&type)) {
       return;
     }
 
-    Local<Value> values[] = {
-      stored.blob->object(),
-      Uint32::NewFromUnsigned(env->isolate(), stored.length),
-      type
-    };
+    Local<Value> values[] = {stored.blob->object(),
+                             Uint32::NewFromUnsigned(isolate, stored.length),
+                             type};
 
-    args.GetReturnValue().Set(
-        Array::New(
-            env->isolate(),
-            values,
-            arraysize(values)));
+    args.GetReturnValue().Set(Array::New(isolate, values, arraysize(values)));
   }
 }
 
@@ -532,11 +544,10 @@ void BlobBindingData::Deserialize(Local<Context> context,
                                   Local<Object> holder,
                                   int index,
                                   InternalFieldInfoBase* info) {
-  DCHECK_EQ(index, BaseObject::kEmbedderType);
+  DCHECK_IS_SNAPSHOT_SLOT(index);
   HandleScope scope(context->GetIsolate());
   Realm* realm = Realm::GetCurrent(context);
-  BlobBindingData* binding =
-      realm->AddBindingData<BlobBindingData>(context, holder);
+  BlobBindingData* binding = realm->AddBindingData<BlobBindingData>(holder);
   CHECK_NOT_NULL(binding);
 }
 
@@ -549,7 +560,7 @@ bool BlobBindingData::PrepareForSerialization(Local<Context> context,
 }
 
 InternalFieldInfoBase* BlobBindingData::Serialize(int index) {
-  DCHECK_EQ(index, BaseObject::kEmbedderType);
+  DCHECK_IS_SNAPSHOT_SLOT(index);
   InternalFieldInfo* info =
       InternalFieldInfoBase::New<InternalFieldInfo>(type());
   return info;

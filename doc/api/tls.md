@@ -22,8 +22,6 @@ calling `require('node:tls')` will result in an error being thrown.
 
 When using CommonJS, the error thrown can be caught using try/catch:
 
-<!-- eslint-skip -->
-
 ```cjs
 let tls;
 try {
@@ -1653,7 +1651,7 @@ changes:
     * hint: {string} optional message sent from the server to help client
       decide which identity to use during negotiation.
       Always `null` if TLS 1.3 is used.
-    * Returns: {Object} in the form
+    * Returns: {Object} An object in the form
       `{ psk: <Buffer|TypedArray|DataView>, identity: <string> }`
       or `null` to stop the negotiation process. `psk` must be
       compatible with the selected cipher's digest.
@@ -2049,6 +2047,11 @@ where `secureSocket` has the same API as `pair.cleartext`.
 <!-- YAML
 added: v0.3.2
 changes:
+  - version:
+    - v20.4.0
+    - v18.19.0
+    pr-url: https://github.com/nodejs/node/pull/45190
+    description: The `options` parameter can now include `ALPNCallback`.
   - version: v19.0.0
     pr-url: https://github.com/nodejs/node/pull/44031
     description: If `ALPNProtocols` is set, incoming connections that send an
@@ -2079,6 +2082,17 @@ changes:
     e.g. `0x05hello0x05world`, where the first byte is the length of the next
     protocol name. Passing an array is usually much simpler, e.g.
     `['hello', 'world']`. (Protocols should be ordered by their priority.)
+  * `ALPNCallback`: {Function} If set, this will be called when a
+    client opens a connection using the ALPN extension. One argument will
+    be passed to the callback: an object containing `servername` and
+    `protocols` fields, respectively containing the server name from
+    the SNI extension (if any) and an array of ALPN protocol name strings. The
+    callback must return either one of the strings listed in
+    `protocols`, which will be returned to the client as the selected
+    ALPN protocol, or `undefined`, to reject the connection with a fatal alert.
+    If a string is returned that does not match one of the client's ALPN
+    protocols, an error will be thrown. This option cannot be used with the
+    `ALPNProtocols` option, and setting both options will throw an error.
   * `clientCertEngine` {string} Name of an OpenSSL engine which can provide the
     client certificate.
   * `enableTrace` {boolean} If `true`, [`tls.TLSSocket.enableTrace()`][] will be

@@ -34,6 +34,7 @@
 #include "node_realm-inl.h"
 #include "util-inl.h"
 #include "uv.h"
+#include "v8-cppgc.h"
 #include "v8.h"
 
 #include <cstddef>
@@ -59,6 +60,39 @@ inline v8::Isolate* IsolateData::isolate() const {
 
 inline uv_loop_t* IsolateData::event_loop() const {
   return event_loop_;
+}
+
+inline void IsolateData::SetCppgcReference(v8::Isolate* isolate,
+                                           v8::Local<v8::Object> object,
+                                           void* wrappable) {
+  v8::CppHeap* heap = isolate->GetCppHeap();
+  CHECK_NOT_NULL(heap);
+  v8::WrapperDescriptor descriptor = heap->wrapper_descriptor();
+  uint16_t required_size = std::max(descriptor.wrappable_instance_index,
+                                    descriptor.wrappable_type_index);
+  CHECK_GT(object->InternalFieldCount(), required_size);
+
+  uint16_t* id_ptr = nullptr;
+  {
+    Mutex::ScopedLock lock(isolate_data_mutex_);
+    auto it =
+        wrapper_data_map_.find(descriptor.embedder_id_for_garbage_collected);
+    CHECK_NE(it, wrapper_data_map_.end());
+    id_ptr = &(it->second->cppgc_id);
+  }
+
+  object->SetAlignedPointerInInternalField(descriptor.wrappable_type_index,
+                                           id_ptr);
+  object->SetAlignedPointerInInternalField(descriptor.wrappable_instance_index,
+                                           wrappable);
+}
+
+inline uint16_t* IsolateData::embedder_id_for_cppgc() const {
+  return &(wrapper_data_->cppgc_id);
+}
+
+inline uint16_t* IsolateData::embedder_id_for_non_cppgc() const {
+  return &(wrapper_data_->non_cppgc_id);
 }
 
 inline NodeArrayBufferAllocator* IsolateData::node_allocator() const {
@@ -337,6 +371,10 @@ inline void Environment::set_exiting(bool value) {
   exit_info_[kExiting] = value ? 1 : 0;
 }
 
+inline bool Environment::exiting() const {
+  return exit_info_[kExiting] == 1;
+}
+
 inline ExitCode Environment::exit_code(const ExitCode default_code) const {
   return exit_info_[kHasExitCode] == 0
              ? default_code
@@ -357,16 +395,6 @@ inline AliasedUint32Array& Environment::should_abort_on_uncaught_toggle() {
 
 inline AliasedInt32Array& Environment::stream_base_state() {
   return stream_base_state_;
-}
-
-inline uint32_t Environment::get_next_module_id() {
-  return module_id_counter_++;
-}
-inline uint32_t Environment::get_next_script_id() {
-  return script_id_counter_++;
-}
-inline uint32_t Environment::get_next_function_id() {
-  return function_id_counter_++;
 }
 
 ShouldNotAbortOnUncaughtScope::ShouldNotAbortOnUncaughtScope(
@@ -406,12 +434,12 @@ inline builtins::BuiltinLoader* Environment::builtin_loader() {
   return &builtin_loader_;
 }
 
-inline const StartExecutionCallback& Environment::embedder_entry_point() const {
-  return embedder_entry_point_;
+inline const EmbedderPreloadCallback& Environment::embedder_preload() const {
+  return embedder_preload_;
 }
 
-inline void Environment::set_embedder_entry_point(StartExecutionCallback&& fn) {
-  embedder_entry_point_ = std::move(fn);
+inline void Environment::set_embedder_preload(EmbedderPreloadCallback fn) {
+  embedder_preload_ = std::move(fn);
 }
 
 inline double Environment::new_async_id() {
@@ -752,10 +780,10 @@ inline void Environment::ThrowRangeError(const char* errmsg) {
 }
 
 inline void Environment::ThrowError(
-    v8::Local<v8::Value> (*fun)(v8::Local<v8::String>),
+    v8::Local<v8::Value> (*fun)(v8::Local<v8::String>, v8::Local<v8::Value>),
     const char* errmsg) {
   v8::HandleScope handle_scope(isolate());
-  isolate()->ThrowException(fun(OneByteString(isolate(), errmsg)));
+  isolate()->ThrowException(fun(OneByteString(isolate(), errmsg), {}));
 }
 
 inline void Environment::ThrowErrnoException(int errorno,

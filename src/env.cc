@@ -4,6 +4,7 @@
 #include "debug_utils-inl.h"
 #include "diagnosticfilename-inl.h"
 #include "memory_tracker-inl.h"
+#include "module_wrap.h"
 #include "node_buffer.h"
 #include "node_context_data.h"
 #include "node_contextify.h"
@@ -12,6 +13,7 @@
 #include "node_options-inl.h"
 #include "node_process-inl.h"
 #include "node_shadow_realm.h"
+#include "node_snapshotable.h"
 #include "node_v8_platform-inl.h"
 #include "node_worker.h"
 #include "req_wrap-inl.h"
@@ -19,6 +21,7 @@
 #include "tracing/agent.h"
 #include "tracing/traced_value.h"
 #include "util-inl.h"
+#include "v8-cppgc.h"
 #include "v8-profiler.h"
 
 #include <algorithm>
@@ -28,6 +31,8 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <unordered_map>
 
 namespace node {
 
@@ -35,6 +40,8 @@ using errors::TryCatchScope;
 using v8::Array;
 using v8::Boolean;
 using v8::Context;
+using v8::CppHeap;
+using v8::CppHeapCreateParams;
 using v8::EmbedderGraph;
 using v8::EscapableHandleScope;
 using v8::Function;
@@ -44,12 +51,15 @@ using v8::HeapSpaceStatistics;
 using v8::Integer;
 using v8::Isolate;
 using v8::Local;
+using v8::Maybe;
 using v8::MaybeLocal;
 using v8::NewStringType;
 using v8::Number;
 using v8::Object;
 using v8::ObjectTemplate;
 using v8::Private;
+using v8::Promise;
+using v8::PromiseHookType;
 using v8::Script;
 using v8::SnapshotCreator;
 using v8::StackTrace;
@@ -57,8 +67,10 @@ using v8::String;
 using v8::Symbol;
 using v8::TracingController;
 using v8::TryCatch;
+using v8::Uint32;
 using v8::Undefined;
 using v8::Value;
+using v8::WrapperDescriptor;
 using worker::Worker;
 
 int const ContextEmbedderTag::kNodeContextTag = 0x6e6f64;
@@ -170,15 +182,13 @@ bool AsyncHooks::pop_async_context(double async_id) {
 }
 
 void AsyncHooks::clear_async_id_stack() {
-  if (env()->can_call_into_js()) {
+  if (!js_execution_async_resources_.IsEmpty() && env()->can_call_into_js()) {
     Isolate* isolate = env()->isolate();
     HandleScope handle_scope(isolate);
-    if (!js_execution_async_resources_.IsEmpty()) {
-      USE(PersistentToLocal::Strong(js_execution_async_resources_)
-              ->Set(env()->context(),
-                    env()->length_string(),
-                    Integer::NewFromUnsigned(isolate, 0)));
-    }
+    USE(PersistentToLocal::Strong(js_execution_async_resources_)
+            ->Set(env()->context(),
+                  env()->length_string(),
+                  Integer::NewFromUnsigned(isolate, 0)));
   }
 
   native_execution_async_resources_.clear();
@@ -281,6 +291,12 @@ std::ostream& operator<<(std::ostream& output,
   return output;
 }
 
+std::ostream& operator<<(std::ostream& output, const SnapshotFlags& flags) {
+  output << "static_cast<SnapshotFlags>(" << static_cast<uint32_t>(flags)
+         << ")";
+  return output;
+}
+
 std::ostream& operator<<(std::ostream& output, const SnapshotMetadata& i) {
   output << "{\n"
          << "  "
@@ -292,6 +308,7 @@ std::ostream& operator<<(std::ostream& output, const SnapshotMetadata& i) {
          << "  \"" << i.node_arch << "\", // node_arch\n"
          << "  \"" << i.node_platform << "\", // node_platform\n"
          << "  " << i.v8_cache_version_tag << ", // v8_cache_version_tag\n"
+         << "  " << i.flags << ", // flags\n"
          << "}";
   return output;
 }
@@ -345,6 +362,8 @@ IsolateDataSerializeInfo IsolateData::Serialize(SnapshotCreator* creator) {
 
 void IsolateData::DeserializeProperties(const IsolateDataSerializeInfo* info) {
   size_t i = 0;
+
+  v8::Isolate::Scope isolate_scope(isolate_);
   HandleScope handle_scope(isolate_);
 
   if (per_process::enabled_debug_list.enabled(DebugCategory::MKSNAPSHOT)) {
@@ -427,6 +446,7 @@ void IsolateData::CreateProperties() {
   // One byte because our strings are ASCII and we can safely skip V8's UTF-8
   // decoding step.
 
+  v8::Isolate::Scope isolate_scope(isolate_);
   HandleScope handle_scope(isolate_);
 
 #define V(PropertyName, StringValue)                                           \
@@ -497,7 +517,13 @@ void IsolateData::CreateProperties() {
   binding::CreateInternalBindingTemplates(this);
 
   contextify::ContextifyContext::InitializeGlobalTemplates(this);
+  CreateEnvProxyTemplate(this);
 }
+
+constexpr uint16_t kDefaultCppGCEmebdderID = 0x90de;
+Mutex IsolateData::isolate_data_mutex_;
+std::unordered_map<uint16_t, std::unique_ptr<PerIsolateWrapperData>>
+    IsolateData::wrapper_data_map_;
 
 IsolateData::IsolateData(Isolate* isolate,
                          uv_loop_t* event_loop,
@@ -512,12 +538,75 @@ IsolateData::IsolateData(Isolate* isolate,
       snapshot_data_(snapshot_data) {
   options_.reset(
       new PerIsolateOptions(*(per_process::cli_options->per_isolate)));
+  v8::CppHeap* cpp_heap = isolate->GetCppHeap();
+
+  uint16_t cppgc_id = kDefaultCppGCEmebdderID;
+  if (cpp_heap != nullptr) {
+    // The general convention of the wrappable layout for cppgc in the
+    // ecosystem is:
+    // [  0  ] -> embedder id
+    // [  1  ] -> wrappable instance
+    // If the Isolate includes a CppHeap attached by another embedder,
+    // And if they also use the field 0 for the ID, we DCHECK that
+    // the layout matches our layout, and record the embedder ID for cppgc
+    // to avoid accidentally enabling cppgc on non-cppgc-managed wrappers .
+    v8::WrapperDescriptor descriptor = cpp_heap->wrapper_descriptor();
+    if (descriptor.wrappable_type_index == BaseObject::kEmbedderType) {
+      cppgc_id = descriptor.embedder_id_for_garbage_collected;
+      DCHECK_EQ(descriptor.wrappable_instance_index, BaseObject::kSlot);
+    }
+    // If the CppHeap uses the slot we use to put non-cppgc-traced BaseObject
+    // for embedder ID, V8 could accidentally enable cppgc on them. So
+    // safe guard against this.
+    DCHECK_NE(descriptor.wrappable_type_index, BaseObject::kSlot);
+  } else {
+    cpp_heap_ = CppHeap::Create(
+        platform,
+        CppHeapCreateParams{
+            {},
+            WrapperDescriptor(
+                BaseObject::kEmbedderType, BaseObject::kSlot, cppgc_id)});
+    isolate->AttachCppHeap(cpp_heap_.get());
+  }
+  // We do not care about overflow since we just want this to be different
+  // from the cppgc id.
+  uint16_t non_cppgc_id = cppgc_id + 1;
+
+  {
+    // GC could still be run after the IsolateData is destroyed, so we store
+    // the ids in a static map to ensure pointers to them are still valid
+    // then. In practice there should be very few variants of the cppgc id
+    // in one process so the size of this map should be very small.
+    node::Mutex::ScopedLock lock(isolate_data_mutex_);
+    auto it = wrapper_data_map_.find(cppgc_id);
+    if (it == wrapper_data_map_.end()) {
+      auto pair = wrapper_data_map_.emplace(
+          cppgc_id, new PerIsolateWrapperData{cppgc_id, non_cppgc_id});
+      it = pair.first;
+    }
+    wrapper_data_ = it->second.get();
+  }
 
   if (snapshot_data == nullptr) {
     CreateProperties();
   } else {
     DeserializeProperties(&snapshot_data->isolate_data_info);
   }
+}
+
+IsolateData::~IsolateData() {
+  if (cpp_heap_ != nullptr) {
+    // The CppHeap must be detached before being terminated.
+    isolate_->DetachCppHeap();
+    cpp_heap_->Terminate();
+  }
+}
+
+// Public API
+void SetCppgcReference(Isolate* isolate,
+                       Local<Object> object,
+                       void* wrappable) {
+  IsolateData::SetCppgcReference(isolate, object, wrappable);
 }
 
 void IsolateData::MemoryInfo(MemoryTracker* tracker) const {
@@ -574,10 +663,6 @@ void Environment::AssignToContext(Local<v8::Context> context,
   context->SetAlignedPointerInEmbedderData(ContextEmbedderIndex::kEnvironment,
                                            this);
   context->SetAlignedPointerInEmbedderData(ContextEmbedderIndex::kRealm, realm);
-  // Used to retrieve bindings
-  context->SetAlignedPointerInEmbedderData(
-      ContextEmbedderIndex::kBindingDataStoreIndex,
-      realm->binding_data_store());
 
   // ContextifyContexts will update this to a pointer to the native object.
   context->SetAlignedPointerInEmbedderData(
@@ -601,8 +686,6 @@ void Environment::UnassignFromContext(Local<v8::Context> context) {
     context->SetAlignedPointerInEmbedderData(ContextEmbedderIndex::kRealm,
                                              nullptr);
     context->SetAlignedPointerInEmbedderData(
-        ContextEmbedderIndex::kBindingDataStoreIndex, nullptr);
-    context->SetAlignedPointerInEmbedderData(
         ContextEmbedderIndex::kContextifyContext, nullptr);
   }
   UntrackContext(context);
@@ -618,7 +701,7 @@ void Environment::TryLoadAddon(
   }
 }
 
-std::string Environment::GetCwd() {
+std::string Environment::GetCwd(const std::string& exec_path) {
   char cwd[PATH_MAX_BYTES];
   size_t size = PATH_MAX_BYTES;
   const int err = uv_cwd(cwd, &size);
@@ -630,7 +713,6 @@ std::string Environment::GetCwd() {
 
   // This can fail if the cwd is deleted. In that case, fall back to
   // exec_path.
-  const std::string& exec_path = exec_path_;
   return exec_path.substr(0, exec_path.find_last_of(kPathSeparator));
 }
 
@@ -664,7 +746,7 @@ std::unique_ptr<v8::BackingStore> Environment::release_managed_buffer(
   return bs;
 }
 
-std::string GetExecPath(const std::vector<std::string>& argv) {
+std::string Environment::GetExecPath(const std::vector<std::string>& argv) {
   char exec_path_buf[2 * PATH_MAX];
   size_t exec_path_len = sizeof(exec_path_buf);
   std::string exec_path;
@@ -706,7 +788,7 @@ Environment::Environment(IsolateData* isolate_data,
       timer_base_(uv_now(isolate_data->event_loop())),
       exec_argv_(exec_args),
       argv_(args),
-      exec_path_(GetExecPath(args)),
+      exec_path_(Environment::GetExecPath(args)),
       exit_info_(
           isolate_, kExitInfoFieldCount, MAYBE_FIELD_PTR(env_info, exit_info)),
       should_abort_on_uncaught_toggle_(
@@ -737,9 +819,24 @@ Environment::Environment(IsolateData* isolate_data,
         isolate_data->worker_context()->env()->builtin_loader());
   } else if (isolate_data->snapshot_data() != nullptr) {
     // ... otherwise, if a snapshot was provided, use its code cache.
-    builtin_loader()->RefreshCodeCache(
-        isolate_data->snapshot_data()->code_cache);
+    size_t cache_size = isolate_data->snapshot_data()->code_cache.size();
+    per_process::Debug(DebugCategory::CODE_CACHE,
+                       "snapshot contains %zu code cache\n",
+                       cache_size);
+    if (cache_size > 0) {
+      builtin_loader()->RefreshCodeCache(
+          isolate_data->snapshot_data()->code_cache);
+    }
   }
+
+  // We are supposed to call builtin_loader_.SetEagerCompile() in
+  // snapshot mode here because it's beneficial to compile built-ins
+  // loaded in the snapshot eagerly and include the code of inner functions
+  // that are likely to be used by user since they are part of the core
+  // startup. But this requires us to start the coverage collections
+  // before Environment/Context creation which is not currently possible.
+  // TODO(joyeecheung): refactor V8ProfilerConnection classes to parse
+  // JSON without v8 and lift this restriction.
 
   // We'll be creating new objects so make sure we've entered the context.
   HandleScope handle_scope(isolate);
@@ -753,7 +850,7 @@ Environment::Environment(IsolateData* isolate_data,
   }
 
   set_env_vars(per_process::system_environment);
-  enabled_debug_list_.Parse(env_vars(), isolate);
+  enabled_debug_list_.Parse(env_vars());
 
   // We create new copies of the per-Environment option sets, so that it is
   // easier to modify them after Environment creation. The defaults are
@@ -785,7 +882,10 @@ Environment::Environment(IsolateData* isolate_data,
   destroy_async_id_list_.reserve(512);
 
   performance_state_ = std::make_unique<performance::PerformanceState>(
-      isolate, MAYBE_FIELD_PTR(env_info, performance_state));
+      isolate,
+      time_origin_,
+      time_origin_timestamp_,
+      MAYBE_FIELD_PTR(env_info, performance_state));
 
   if (*TRACE_EVENT_API_GET_CATEGORY_GROUP_ENABLED(
           TRACING_CATEGORY_NODE1(environment)) != 0) {
@@ -805,28 +905,32 @@ Environment::Environment(IsolateData* isolate_data,
 
   if (options_->experimental_permission) {
     permission()->EnablePermissions();
-    // If any permission is set the process shouldn't be able to neither
+    // The process shouldn't be able to neither
     // spawn/worker nor use addons or enable inspector
     // unless explicitly allowed by the user
-    if (!options_->allow_fs_read.empty() || !options_->allow_fs_write.empty()) {
+    if (!options_->allow_addons) {
       options_->allow_native_addons = false;
-      flags_ = flags_ | EnvironmentFlags::kNoCreateInspector;
-      permission()->Apply("*", permission::PermissionScope::kInspector);
-      if (!options_->allow_child_process) {
-        permission()->Apply("*", permission::PermissionScope::kChildProcess);
-      }
-      if (!options_->allow_worker_threads) {
-        permission()->Apply("*", permission::PermissionScope::kWorkerThreads);
-      }
+    }
+    flags_ = flags_ | EnvironmentFlags::kNoCreateInspector;
+    permission()->Apply(this, {"*"}, permission::PermissionScope::kInspector);
+    if (!options_->allow_child_process) {
+      permission()->Apply(
+          this, {"*"}, permission::PermissionScope::kChildProcess);
+    }
+    if (!options_->allow_worker_threads) {
+      permission()->Apply(
+          this, {"*"}, permission::PermissionScope::kWorkerThreads);
     }
 
     if (!options_->allow_fs_read.empty()) {
-      permission()->Apply(options_->allow_fs_read,
+      permission()->Apply(this,
+                          options_->allow_fs_read,
                           permission::PermissionScope::kFileSystemRead);
     }
 
     if (!options_->allow_fs_write.empty()) {
-      permission()->Apply(options_->allow_fs_write,
+      permission()->Apply(this,
+                          options_->allow_fs_write,
                           permission::PermissionScope::kFileSystemWrite);
     }
   }
@@ -1124,6 +1228,41 @@ void Environment::RunAtExitCallbacks() {
 
 void Environment::AtExit(void (*cb)(void* arg), void* arg) {
   at_exit_functions_.push_front(ExitCallback{cb, arg});
+}
+
+Maybe<bool> Environment::CheckUnsettledTopLevelAwait() {
+  HandleScope scope(isolate_);
+  Local<Context> ctx = context();
+  Local<Value> value;
+
+  Local<Value> entry_point_promise;
+  if (!ctx->Global()
+           ->GetPrivate(ctx, entry_point_promise_private_symbol())
+           .ToLocal(&entry_point_promise)) {
+    return v8::Nothing<bool>();
+  }
+  if (!entry_point_promise->IsPromise()) {
+    return v8::Just(true);
+  }
+  if (entry_point_promise.As<Promise>()->State() !=
+      Promise::PromiseState::kPending) {
+    return v8::Just(true);
+  }
+
+  if (!ctx->Global()
+           ->GetPrivate(ctx, entry_point_module_private_symbol())
+           .ToLocal(&value)) {
+    return v8::Nothing<bool>();
+  }
+  if (!value->IsObject()) {
+    return v8::Just(true);
+  }
+  Local<Object> object = value.As<Object>();
+  CHECK(BaseObject::IsBaseObject(isolate_data_, object));
+  CHECK_EQ(object->InternalFieldCount(),
+           loader::ModuleWrap::kInternalFieldCount);
+  auto* wrap = BaseObject::FromJSObject<loader::ModuleWrap>(object);
+  return wrap->CheckUnsettledTopLevelAwait();
 }
 
 void Environment::RunAndClearInterrupts() {
@@ -1587,10 +1726,13 @@ void AsyncHooks::MemoryInfo(MemoryTracker* tracker) const {
 void AsyncHooks::grow_async_ids_stack() {
   async_ids_stack_.reserve(async_ids_stack_.Length() * 3);
 
-  env()->async_hooks_binding()->Set(
-      env()->context(),
-      env()->async_ids_stack_string(),
-      async_ids_stack_.GetJSArray()).Check();
+  env()
+      ->principal_realm()
+      ->async_hooks_binding()
+      ->Set(env()->context(),
+            env()->async_ids_stack_string(),
+            async_ids_stack_.GetJSArray())
+      .Check();
 }
 
 void AsyncHooks::FailWithCorruptedAsyncStack(double expected_async_id) {
@@ -1599,7 +1741,8 @@ void AsyncHooks::FailWithCorruptedAsyncStack(double expected_async_id) {
           "actual: %.f, expected: %.f)\n",
           async_id_fields_.GetValue(kExecutionAsyncId),
           expected_async_id);
-  DumpBacktrace(stderr);
+  DumpNativeBacktrace(stderr);
+  DumpJavaScriptBacktrace(stderr);
   fflush(stderr);
   // TODO(joyeecheung): should this exit code be more specific?
   if (!env()->abort_on_uncaught_exception()) Exit(ExitCode::kGenericUserError);
@@ -1698,7 +1841,7 @@ void Environment::EnqueueDeserializeRequest(DeserializeRequestCallback cb,
                                             Local<Object> holder,
                                             int index,
                                             InternalFieldInfoBase* info) {
-  DCHECK_EQ(index, BaseObject::kEmbedderType);
+  DCHECK_IS_SNAPSHOT_SLOT(index);
   DeserializeRequest request{cb, {isolate(), holder}, index, info};
   deserialize_requests_.push_back(std::move(request));
 }
@@ -1734,7 +1877,7 @@ void Environment::DeserializeProperties(const EnvSerializeInfo* info) {
   immediate_info_.Deserialize(ctx);
   timeout_info_.Deserialize(ctx);
   tick_info_.Deserialize(ctx);
-  performance_state_->Deserialize(ctx);
+  performance_state_->Deserialize(ctx, time_origin_, time_origin_timestamp_);
   exit_info_.Deserialize(ctx);
   stream_base_state_.Deserialize(ctx);
   should_abort_on_uncaught_toggle_.Deserialize(ctx);
@@ -1766,6 +1909,60 @@ void Environment::BuildEmbedderGraph(Isolate* isolate,
   Environment* env = static_cast<Environment*>(data);
   // Start traversing embedder objects from the root Environment object.
   tracker.Track(env);
+}
+
+std::optional<uint32_t> GetPromiseId(Environment* env, Local<Promise> promise) {
+  Local<Value> id_val;
+  if (!promise->GetPrivate(env->context(), env->promise_trace_id())
+           .ToLocal(&id_val) ||
+      !id_val->IsUint32()) {
+    return std::nullopt;
+  }
+  return id_val.As<Uint32>()->Value();
+}
+
+void Environment::TracePromises(PromiseHookType type,
+                                Local<Promise> promise,
+                                Local<Value> parent) {
+  // We don't care about the execution of promises, just the
+  // creation/resolution.
+  if (type == PromiseHookType::kBefore || type == PromiseHookType::kAfter) {
+    return;
+  }
+  Isolate* isolate = Isolate::GetCurrent();
+  Local<Context> context = isolate->GetCurrentContext();
+  Environment* env = Environment::GetCurrent(context);
+  if (env == nullptr) return;
+
+  std::optional<uint32_t> parent_id;
+  if (!parent.IsEmpty() && parent->IsPromise()) {
+    parent_id = GetPromiseId(env, parent.As<Promise>());
+  }
+
+  uint32_t id = 0;
+  std::string action;
+  if (type == PromiseHookType::kInit) {
+    id = env->trace_promise_id_counter_++;
+    promise->SetPrivate(
+        context, env->promise_trace_id(), Uint32::New(isolate, id));
+    action = "created";
+  } else if (type == PromiseHookType::kResolve) {
+    auto opt = GetPromiseId(env, promise);
+    if (!opt.has_value()) return;
+    id = opt.value();
+    action = "resolved";
+  } else {
+    UNREACHABLE();
+  }
+
+  FPrintF(stderr, "[--trace-promises] ");
+  if (parent_id.has_value()) {
+    FPrintF(stderr, "promise #%d ", parent_id.value());
+  }
+  FPrintF(stderr, "%s promise #%d\n", action, id);
+  // TODO(joyeecheung): we can dump the native stack trace too if the
+  // JS stack trace is empty i.e. it may be resolved on the native side.
+  PrintCurrentStackTrace(isolate);
 }
 
 size_t Environment::NearHeapLimitCallback(void* data,
@@ -1858,7 +2055,7 @@ size_t Environment::NearHeapLimitCallback(void* data,
 
   std::string dir = env->options()->diagnostic_dir;
   if (dir.empty()) {
-    dir = env->GetCwd();
+    dir = Environment::GetCwd(env->exec_path_);
   }
   DiagnosticFilename name(env, "Heap", "heapsnapshot");
   std::string filename = dir + kPathSeparator + (*name);
